@@ -1,0 +1,34 @@
+[package]
+name = "hormos-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Interface en ligne de commande d'Hormos (control plane conteneurs local-first)."
+readme = "../../README.md"
+
+# Produit le binaire `hormos`.
+[[bin]]
+name = "hormos"
+path = "src/main.rs"
+
+# La CLI ne dépend d'aucun client Docker : elle ne connaît que `hormos-core`.
+# `hormos-docker` n'est utilisé qu'au point de composition (`main`), pour
+# construire l'implémentation concrète du trait `ContainerRuntime`.
+[dependencies]
+clap.workspace = true
+hormos-core.workspace = true
+hormos-docker.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
+
+[lints]
+workspace = true

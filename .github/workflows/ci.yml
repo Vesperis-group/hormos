@@ -1,0 +1,126 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, test, build)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Rust (pinned via rust-toolchain.toml)
+        run: |
+          rustup show
+          rustc --version
+          rustup show active-toolchain
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Fetch dependencies (locked)
+        run: cargo fetch --locked
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --all-features --locked
+
+      - name: Build release
+        run: cargo build --workspace --all-features --locked --release
+
+      - name: Whitespace / conflict markers check
+        run: git diff --check "$(git hash-object -t tree /dev/null)"
+
+  docker-integration:
+    name: Docker (moteur réel)
+    runs-on: ubuntu-24.04
+    # Les runners GitHub hébergés fournissent déjà un démon Docker : aucun
+    # service supplémentaire, aucun socket exposé au réseau.
+    #
+    # Identité de cette exécution : elle étiquette les conteneurs créés par la
+    # suite et borne strictement le nettoyage. Aucune donnée sensible.
+    env:
+      HORMOS_DOCKER_TEST_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Rust (pinned via rust-toolchain.toml)
+        run: rustup show active-toolchain
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Fetch dependencies (locked)
+        run: cargo fetch --locked
+
+      - name: Vérifier la présence du moteur
+        run: docker version --format '{{.Server.Version}}'
+
+      - name: Précharger l'image de test (épinglée par digest)
+        run: docker pull --quiet "$HORMOS_TEST_IMAGE"
+        env:
+          HORMOS_TEST_IMAGE: alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+
+      - name: Tests d'intégration contre le moteur
+        run: cargo test -p hormos-docker --locked --test engine -- --test-threads=1
+        env:
+          HORMOS_DOCKER_INTEGRATION: "1"
+
+      - name: Nettoyage des conteneurs de test
+        if: always()
+        # Sélection croisée : étiquette de test ET identité de cette exécution.
+        # Filtrer sur la seule étiquette `io.hormos.test=true` supprimerait les
+        # conteneurs d'une autre suite Hormos partageant le démon. Jamais de
+        # `docker prune`, jamais de suppression d'une ressource étrangère.
+        #
+        # Le suffixe « -foreign » est l'exécution simulée par le test
+        # d'isolation : elle appartient encore à ce job, donc à ce nettoyage.
+        run: |
+          for run in "$HORMOS_DOCKER_TEST_RUN_ID" "$HORMOS_DOCKER_TEST_RUN_ID-foreign"; do
+            ids="$(docker ps --all --quiet \
+              --filter label=io.hormos.test=true \
+              --filter "label=io.hormos.test.run=${run}")"
+            if [ -n "$ids" ]; then
+              echo "$ids" | xargs -r docker rm --force
+            fi
+          done
+
+      - name: Vérifier l'absence de résidu
+        if: always()
+        # Portée volontairement limitée à ce job : exiger zéro conteneur
+        # `io.hormos.test=true` sur tout le démon reviendrait à décréter qu'aucune
+        # autre suite légitime n'a le droit d'exister.
+        run: |
+          status=0
+          for run in "$HORMOS_DOCKER_TEST_RUN_ID" "$HORMOS_DOCKER_TEST_RUN_ID-foreign"; do
+            remaining="$(docker ps --all --quiet \
+              --filter label=io.hormos.test=true \
+              --filter "label=io.hormos.test.run=${run}")"
+            if [ -n "$remaining" ]; then
+              echo "Conteneurs résiduels pour l'exécution ${run} :" >&2
+              echo "$remaining" >&2
+              status=1
+            fi
+          done
+          exit "$status"

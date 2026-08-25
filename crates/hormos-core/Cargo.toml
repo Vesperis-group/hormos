@@ -1,0 +1,23 @@
+[package]
+name = "hormos-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Cœur d'Hormos : domaine, validation, erreurs et abstraction ContainerRuntime. Aucune dépendance à un moteur de conteneurs."
+readme = "../../README.md"
+
+[dependencies]
+async-trait.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,4 @@
+# Propriétaires de code par défaut pour Hormos.
+# La team @Vesperis-group/hormos-maintainers (rôle Maintainer sur le dépôt) est
+# requise comme reviewer par le ruleset « Protect main » (CODEOWNER review).
+* @Vesperis-group/hormos-maintainers

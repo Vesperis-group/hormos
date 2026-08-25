@@ -1,0 +1,22 @@
+# Rust
+/target/
+**/target/
+
+# Node (outillage de release uniquement)
+/node_modules/
+
+# Artefacts de release générés localement / en CI (attachés à la GitHub Release,
+# jamais committés).
+/hormos-v*-x86_64-*/
+/hormos-v*-x86_64-*.tar.gz
+/hormos-v*-x86_64-*.tar.gz.sha256
+
+# Artefacts d'intégrité de release (SBOM, checksums, bundles cosign, provenance)
+/hormos-v*-sbom.cdx.json
+/hormos-v*-sbom.cdx.json.sha256
+/hormos-v*-checksums.txt
+/hormos-v*.sigstore.json
+/hormos-v*-provenance.intoto.jsonl
+
+# Divers
+*.log

@@ -1,0 +1,19 @@
+{
+  "name": "hormos-release-tooling",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Outillage de release (release-it) pour le projet Rust Hormos. Aucune publication npm.",
+  "packageManager": "pnpm@11.23.0",
+  "engines": {
+    "node": ">=24.19.0"
+  },
+  "scripts": {
+    "release": "release-it --ci --config release-it.json",
+    "release:dry": "release-it --dry-run --config release-it.json"
+  },
+  "devDependencies": {
+    "@release-it/bumper": "8.0.0",
+    "@release-it/conventional-changelog": "12.0.0",
+    "release-it": "21.0.2"
+  }
+}

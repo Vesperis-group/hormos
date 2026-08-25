@@ -1,0 +1,359 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Sérialise les runs de release sur une même ref pour éviter deux publications
+# concurrentes. cancel-in-progress: false — on ne veut JAMAIS annuler une release
+# après une étape irréversible (promotion main / création de tag). La
+# sérialisation ne suffit pas contre le TOCTOU : les vérifications explicites de
+# SHA (base testée == parent == main avant promotion) restent obligatoires.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    name: Quality gate (fmt, clippy, tests, build)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    # Garde de release : ne s'exécute que si la publication est explicitement
+    # activée. Sans la variable, un push sur main ne déclenche rien (pas d'échec
+    # faute de secrets). `[skip ci]` court-circuite le commit de release.
+    if: ${{ vars.HORMOS_RELEASE_ENABLED == 'true' && !contains(github.event.head_commit.message, '[skip ci]') }}
+    steps:
+      - name: Checkout the triggering SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Rust (pinned via rust-toolchain.toml)
+        run: |
+          rustup show
+          rustc --version
+          rustup show active-toolchain
+
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: v0-rust-ubuntu2204
+
+      - name: Fetch dependencies (locked)
+        run: cargo fetch --locked
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --all-features --locked
+
+      - name: Build release (sanity)
+        run: cargo build --workspace --locked --release
+
+      - name: Build musl (sanity)
+        run: cargo build --workspace --locked --release --target x86_64-unknown-linux-musl
+
+      - name: Shell scripts syntax check
+        run: |
+          for s in scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh; do bash -n "$s"; done
+
+      - name: Release invariants tests (SHA, no-op, worktree, tag, Sigstore)
+        run: bash scripts/tests/release-invariants.sh
+
+  audit:
+    name: Audit supply chain (deny, audit, gitleaks)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    if: ${{ vars.HORMOS_RELEASE_ENABLED == 'true' && !contains(github.event.head_commit.message, '[skip ci]') }}
+    steps:
+      - name: Checkout the triggering SHA (historique complet pour gitleaks)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Rust (pinned via rust-toolchain.toml)
+        run: |
+          rustup show
+          rustc --version
+          rustup show active-toolchain
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Fetch dependencies (locked)
+        run: cargo fetch --locked
+
+      - name: Install audit tools (versions exactes)
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo install cargo-deny --version 0.20.2 --locked
+
+      - name: Print tool versions
+        run: |
+          cargo audit --version
+          cargo deny --version
+
+      - name: cargo audit (vulnérabilités RustSec)
+        run: cargo audit
+
+      - name: cargo deny check (licences, avis, sources)
+        run: cargo deny check
+
+      - name: Install gitleaks CLI (checksum vérifié)
+        run: |
+          set -euo pipefail
+          GITLEAKS_VERSION="8.27.2"
+          GITLEAKS_SHA256="141c3b2dede46d8b3a53b47116da756bd223decc0374797559a6b50ecba5590c"
+          curl -fsSL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            -o /tmp/gitleaks.tar.gz
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Run gitleaks
+        run: gitleaks detect --source . --redact --verbose --exit-code 1
+
+  publish:
+    name: Prepare, sign and publish Linux release (glibc + musl)
+    needs: [quality, audit]
+    if: ${{ success() && vars.HORMOS_RELEASE_ENABLED == 'true' && !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read # les écritures (commit/tag/release) passent par le jeton de l'App
+      id-token: write # OIDC keyless pour cosign (sign-blob / attest-blob)
+    steps:
+      # Jeton éphémère de la GitHub App (Contents RW), limité au dépôt hormos.
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.HORMOS_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HORMOS_RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: hormos
+
+      # Checkout EXACT du SHA déclencheur (== base testée par quality/audit).
+      # persist-credentials: false — aucune écriture git locale, tout passe par l'API.
+      - name: Checkout the triggering SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert HEAD is the triggering SHA
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          echo "Base testée = ${{ github.sha }}"
+
+      - name: Setup Rust (pinned via rust-toolchain.toml)
+        run: |
+          rustup show
+          rustc --version
+          rustup show active-toolchain
+
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: v0-rust-ubuntu2204
+
+      - name: Setup Node.js (.node-version)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: ".node-version"
+
+      - name: Enable pnpm (packageManager)
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.23.0 --activate
+          pnpm --version
+
+      - name: Install release tooling (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Audit des dépendances Node (prod + dev)
+        run: pnpm audit
+
+      # DÉCISION : y a-t-il une release à publier ? (docs/chore/ci => non.)
+      - name: Decide whether a release is required
+        id: decide
+        run: |
+          set -euo pipefail
+          . scripts/lib/release-lib.sh
+          out="$(pnpm run release:dry 2>&1)" || true
+          printf '%s\n' "$out"
+          sr="$(rl_should_release_from_output "$out")"
+          echo "should_release=${sr}" >> "$GITHUB_OUTPUT"
+          echo "should_release=${sr}"
+
+      - name: No release required (success no-op)
+        if: ${{ steps.decide.outputs.should_release != 'true' }}
+        run: echo "No release required — historique sans changement releasable."
+
+      # PRÉPARATION : bump Cargo.toml + CHANGELOG, resync Cargo.lock, allowlist.
+      - name: Prepare release (bump + changelog)
+        id: prepare
+        if: ${{ steps.decide.outputs.should_release == 'true' }}
+        run: |
+          set -euo pipefail
+          . scripts/lib/release-lib.sh
+          pnpm run release
+          cargo update --workspace --offline
+          version="$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -n1)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          rl_worktree_allowlist_ok "$(git status --porcelain)"
+          echo "Prepared ${version}"
+
+      # COMMIT Verified + STAGING ref (jamais main, jamais un tag v*).
+      - name: Create verified release commit on a staging ref
+        id: commit
+        if: ${{ steps.decide.outputs.should_release == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          HORMOS_VERSION: ${{ steps.prepare.outputs.version }}
+          HORMOS_RELEASE_BASE_SHA: ${{ github.sha }}
+        run: bash scripts/create-release-commit.sh
+
+      # Checkout PROPRE du commit de release (source == attestée == construite).
+      - name: Checkout the exact release commit
+        if: ${{ steps.decide.outputs.should_release == 'true' }}
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+          STAGING_REF: ${{ steps.commit.outputs.staging_ref }}
+          RELEASE_SHA: ${{ steps.commit.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "${TOKEN}" | base64 -w0)"
+          git -c http.extraheader="Authorization: Basic ${auth}" \
+            fetch --no-tags origin "refs/heads/${STAGING_REF}"
+          git checkout --force --detach "${RELEASE_SHA}"
+          test "$(git rev-parse HEAD)" = "${RELEASE_SHA}"
+          test -z "$(git status --porcelain)"
+          echo "HEAD == ${RELEASE_SHA}, arbre propre."
+
+      - name: Fetch dependencies (locked)
+        if: ${{ steps.decide.outputs.should_release == 'true' }}
+        run: cargo fetch --locked
+
+      - name: Build binaries (glibc + musl) from the release commit
+        if: ${{ steps.decide.outputs.should_release == 'true' }}
+        run: |
+          set -euo pipefail
+          cargo build --locked --release
+          cargo build --locked --release --target x86_64-unknown-linux-musl
+          file target/release/hormos
+          file target/x86_64-unknown-linux-musl/release/hormos
+
+      - name: Install cosign (pinned + checksum verified)
+        if: ${{ steps.decide.outputs.should_release == 'true' }}
+        env:
+          COSIGN_VERSION: "3.1.1"
+          COSIGN_SHA256: "ae1ecd212663f3693ad9edf8b1a183900c9a52d3155ba6e354237f9a0f6463fc"
+        run: |
+          set -euo pipefail
+          url="https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64"
+          curl -fsSL "${url}" -o /tmp/cosign
+          echo "${COSIGN_SHA256}  /tmp/cosign" | sha256sum -c -
+          sudo install -m 0755 /tmp/cosign /usr/local/bin/cosign
+          rm -f /tmp/cosign
+          cosign version
+
+      - name: Install cargo-cyclonedx (pinned, locked)
+        if: ${{ steps.decide.outputs.should_release == 'true' }}
+        run: cargo install cargo-cyclonedx --version 0.5.9 --locked
+
+      # Empaquetage + intégrité, attestés sur le SHA exact construit.
+      - name: Package, SBOM, checksums, sign, provenance
+        if: ${{ steps.decide.outputs.should_release == 'true' }}
+        env:
+          HORMOS_VERSION: ${{ steps.prepare.outputs.version }}
+          HORMOS_RELEASE_SHA: ${{ steps.commit.outputs.release_sha }}
+          HORMOS_RELEASE_REF: refs/tags/${{ steps.commit.outputs.tag }}
+        run: |
+          set -euo pipefail
+          HORMOS_TARGET_LABEL=x86_64-unknown-linux-gnu-glibc2.35 \
+            HORMOS_BINARY_PATH=target/release/hormos \
+            bash scripts/package-release.sh
+          HORMOS_TARGET_LABEL=x86_64-unknown-linux-musl \
+            HORMOS_BINARY_PATH=target/x86_64-unknown-linux-musl/release/hormos \
+            bash scripts/package-release.sh
+          bash scripts/generate-sbom.sh
+          bash scripts/checksums-release.sh
+          bash scripts/sign-release.sh
+          bash scripts/intoto-provenance.sh
+
+      # VALIDATION complète des artefacts AVANT toute promotion (§13).
+      - name: Validate artifacts before promotion
+        if: ${{ steps.decide.outputs.should_release == 'true' }}
+        env:
+          HORMOS_VERSION: ${{ steps.prepare.outputs.version }}
+        run: bash scripts/validate-artifacts.sh
+
+      # PROMOTION tardive : re-vérifie main == base, FF main -> C, tag final -> C.
+      - name: Promote main and create final tag
+        if: ${{ steps.decide.outputs.should_release == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          HORMOS_VERSION: ${{ steps.prepare.outputs.version }}
+          HORMOS_RELEASE_BASE_SHA: ${{ github.sha }}
+          HORMOS_RELEASE_SHA: ${{ steps.commit.outputs.release_sha }}
+        run: bash scripts/promote-release.sh
+
+      # GitHub Release idempotente + upload + vérification post-release.
+      - name: Publish and verify GitHub Release
+        if: ${{ steps.decide.outputs.should_release == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          HORMOS_VERSION: ${{ steps.prepare.outputs.version }}
+          HORMOS_RELEASE_SHA: ${{ steps.commit.outputs.release_sha }}
+        run: bash scripts/publish-github-release.sh
+
+      # Nettoyage de la ref de staging UNIQUEMENT après succès COMPLET du
+      # pipeline. En cas d'échec, la ref est CONSERVÉE pour un rerun sûr (recovery)
+      # — on ne veut jamais perdre le commit de release C après une étape
+      # irréversible. Un échec de ce cleanup ne rend pas une release réussie invalide.
+      - name: Cleanup staging ref (best-effort, on full success only)
+        if: ${{ success() && steps.decide.outputs.should_release == 'true' && steps.commit.outputs.staging_ref != '' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          STAGING_REF: ${{ steps.commit.outputs.staging_ref }}
+        run: |
+          gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/${STAGING_REF}" \
+            && echo "Ref de staging supprimée : ${STAGING_REF}" \
+            || echo "Cleanup best-effort : ${STAGING_REF} (déjà supprimée ?)"
+
+      # En cas d'échec après création du staging : CONSERVER la ref (aucune
+      # mutation) et l'indiquer clairement pour la reprise.
+      - name: Retain staging ref on failure (recovery)
+        if: ${{ failure() && steps.commit.outputs.staging_ref != '' }}
+        env:
+          STAGING_REF: ${{ steps.commit.outputs.staging_ref }}
+        run: |
+          echo "Release failed; staging ref retained for safe rerun: ${STAGING_REF}"

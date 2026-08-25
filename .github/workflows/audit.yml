@@ -1,0 +1,89 @@
+name: Audit (DevSecOps)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  supply-chain:
+    name: cargo audit / deny / machete
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Rust (pinned via rust-toolchain.toml)
+        run: |
+          rustup show
+          rustc --version
+          rustup show active-toolchain
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Fetch dependencies (locked)
+        run: cargo fetch --locked
+
+      - name: Install audit tools (versions exactes)
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo install cargo-deny --version 0.20.2 --locked
+          cargo install cargo-machete --version 0.9.2 --locked
+
+      - name: Print tool versions
+        run: |
+          cargo audit --version
+          cargo deny --version
+          cargo machete --version
+
+      - name: cargo audit (vulnérabilités RustSec)
+        run: cargo audit
+
+      - name: cargo deny check (licences, avis, sources)
+        run: cargo deny check
+
+      - name: cargo machete (dépendances inutilisées)
+        run: cargo machete
+
+  secrets:
+    name: gitleaks (détection de secrets)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks CLI (checksum vérifié)
+        run: |
+          set -euo pipefail
+          GITLEAKS_VERSION="8.27.2"
+          GITLEAKS_SHA256="141c3b2dede46d8b3a53b47116da756bd223decc0374797559a6b50ecba5590c"
+          curl -fsSL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            -o /tmp/gitleaks.tar.gz
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Run gitleaks
+        run: |
+          gitleaks detect \
+            --source . \
+            --redact \
+            --verbose \
+            --exit-code 1

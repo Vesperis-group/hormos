@@ -1,0 +1,24 @@
+[package]
+name = "hormos-docker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Adaptateur Docker d'Hormos : implémente ContainerRuntime via Bollard, sur socket local uniquement."
+readme = "../../README.md"
+
+[dependencies]
+async-trait.workspace = true
+bollard.workspace = true
+hormos-core.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+# `test-util` fournit l'horloge virtuelle : les délais sont testés sans attendre.
+tokio = { workspace = true, features = ["macros", "rt", "process", "test-util", "time"] }
+
+[lints]
+workspace = true

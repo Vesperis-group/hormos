@@ -1,0 +1,61 @@
+version: 2
+
+# Dependabot : détection automatique des mises à jour de dépendances.
+# Cible le check OpenSSF Scorecard « Dependency-Update-Tool ».
+#
+# Politique supply chain du dépôt :
+# - Les actions GitHub sont épinglées par SHA de commit complet. Dependabot
+#   conserve cet épinglage : il met à jour le SHA ET le commentaire `# vX.Y.Z`,
+#   sans repasser à un tag flottant.
+# - Aucun auto-merge : chaque PR Dependabot passe la revue et les contrôles
+#   CI/audit habituels avant fusion.
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "rust"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      cargo-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Outillage de release Node (pnpm). Dependabot lit pnpm-lock.yaml via
+  # l'écosystème npm.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "npm"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci(deps)"
+    groups:
+      github-actions-all:
+        update-types:
+          - "minor"
+          - "patch"

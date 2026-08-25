@@ -1,0 +1,59 @@
+# Workspace Hormos — control plane local-first / security-first pour conteneurs.
+#
+# « One engine. Every interface. » Un même core Rust est consommé par les
+# interfaces (CLI aujourd'hui ; TUI, API, Web plus tard). Les interfaces ne
+# contiennent aucune logique Docker : elles passent par `hormos-core`, qui ne
+# connaît que le trait `ContainerRuntime` (voir docs/adr/0001).
+#
+# Version : 0.0.0. La 0.1.0 sera produite par le pipeline de release à partir des
+# commits `feat:` (voir docs/release.md) ; elle n'est pas fixée à la main.
+
+[workspace]
+resolver = "3"
+members = ["crates/hormos-core", "crates/hormos-docker", "crates/hormos-cli"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98.0"
+license = "MIT"
+authors = ["Vesperis-group"]
+repository = "https://github.com/Vesperis-group/hormos"
+homepage = "https://github.com/Vesperis-group/hormos"
+
+# Dépendances partagées, versionnées en un seul endroit (jamais de wildcard).
+#
+# bollard : client Docker Engine officieux de référence (Apache-2.0). Profil
+# volontairement minimal : `default-features = false` + `pipe` uniquement, ce qui
+# ne compile QUE le transport socket Unix / named pipe local. Les transports
+# distants (`http`, `ssl`, `ssh`, `websocket`) et `buildkit` ne sont pas compilés :
+# une connexion réseau implicite est donc impossible par construction.
+[workspace.dependencies]
+async-trait = "0.1.92"
+bollard = { version = "0.21.1", default-features = false, features = ["pipe"] }
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", default-features = false, features = ["macros", "rt", "time"] }
+
+hormos-core = { path = "crates/hormos-core", version = "0.0.0" }
+hormos-docker = { path = "crates/hormos-docker", version = "0.0.0" }
+
+# Lints partagés par tous les crates du workspace. `unsafe` est interdit par
+# défaut (supply chain / mémoire) ; l'usage non justifié de `unwrap`/`expect` est
+# signalé pour éviter les paniques silencieuses en production.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+
+[profile.release]
+strip = true
+lto = true
+opt-level = "z"
+codegen-units = 1
+panic = "abort"

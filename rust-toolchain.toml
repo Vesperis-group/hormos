@@ -1,0 +1,15 @@
+# Épingle la toolchain Rust à une version EXACTE (supply chain : pas de canal
+# flottant « stable »). rustup lit ce fichier automatiquement (local et CI),
+# garantissant que tout le monde compile Hormos avec la même version.
+#
+# Pour mettre à jour : choisir une nouvelle version, valider la quality gate
+#   (cargo fmt --all -- --check && cargo clippy --workspace --all-targets
+#    --all-features --locked -- -D warnings && cargo test --workspace --locked
+#    && cargo build --workspace --release --locked [--target
+#    x86_64-unknown-linux-musl]),
+# puis remplacer le numéro ci-dessous.
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-unknown-linux-musl"]
+profile = "minimal"

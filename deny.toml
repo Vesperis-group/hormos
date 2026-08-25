@@ -1,0 +1,45 @@
+# Configuration de cargo-deny pour Hormos.
+# https://embarkstudios.github.io/cargo-deny/
+#
+# Politique : refuser les vulnérabilités RustSec, n'autoriser que des licences
+# permissives compatibles, refuser les wildcards et les sources inattendues.
+# Lancé par `make audit` et la CI (.github/workflows/audit.yml).
+
+[advisories]
+# Base d'avis RustSec. Toute vulnérabilité connue fait échouer la vérification.
+version = 2
+yanked = "warn"
+# Aucune exception : on n'ignore pas d'advisory sans dépendance réelle
+# correspondante. (Ne rien copier d'un autre projet « par défaut ».)
+ignore = []
+
+[licenses]
+version = 2
+# Licences explicitement autorisées, limitées à ce que l'arbre de dépendances
+# rencontre réellement (MIT / Apache-2.0 / Unicode-3.0). Toute nouvelle licence
+# introduite par une mise à jour fera échouer `cargo deny` : c'est volontaire —
+# un humain revoit alors l'ajout avant d'étendre cette liste.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+]
+# Seuil de confiance pour la détection de licence par cargo-deny.
+confidence-threshold = 0.8
+# Exceptions de licence documentées (aucune pour l'instant). Format :
+# { allow = ["..."], name = "crate", version = "*" }
+exceptions = []
+
+[bans]
+# Signale les versions multiples d'une même dépendance (poids / surface).
+multiple-versions = "warn"
+# Refuse les wildcards de version dans nos propres dépendances.
+wildcards = "deny"
+allow = []
+deny = []
+
+[sources]
+# N'autorise que crates.io comme registre par défaut.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -1,0 +1,33 @@
+{
+  "git": {
+    "commit": false,
+    "tag": false,
+    "push": false,
+    "requireCleanWorkingDir": false,
+    "requireUpstream": false
+  },
+  "github": {
+    "release": false
+  },
+  "npm": false,
+  "hooks": {},
+  "plugins": {
+    "@release-it/bumper": {
+      "in": {
+        "file": "Cargo.toml",
+        "path": "workspace.package.version"
+      },
+      "out": {
+        "file": "Cargo.toml",
+        "path": "workspace.package.version"
+      }
+    },
+    "@release-it/conventional-changelog": {
+      "infile": "CHANGELOG.md",
+      "header": "# Changelog\n",
+      "preset": {
+        "name": "conventionalcommits"
+      }
+    }
+  }
+}

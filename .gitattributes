@@ -1,0 +1,17 @@
+# Normalise les fins de ligne : LF partout dans le dépôt.
+* text=auto eol=lf
+
+*.rs   text
+*.toml text
+*.md   text
+*.yml  text
+*.yaml text
+*.sh   text eol=lf
+*.json text
+
+# Fichiers binaires (jamais de conversion de fins de ligne).
+*.png  binary
+*.jpg  binary
+*.gz   binary
+*.tar  binary
+Cargo.lock text
