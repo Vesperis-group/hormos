@@ -24,6 +24,8 @@ Invariants durables d'Hormos. Court par conception : pas de détail volatil.
   seed initial du dépôt vide).
 - Conventional Commits, **atomiques et signés**.
 - Pas de `feat:` tant qu'une release *minor* n'est pas voulue.
+- **Jamais** de co-auteur d'assistant IA (`Co-authored-by: Copilot`, ou
+  équivalent) dans un commit : l'historique n'attribue qu'à des personnes.
 
 ## Supply chain
 

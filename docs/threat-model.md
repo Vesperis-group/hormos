@@ -34,6 +34,8 @@ conteneurs.
 | 13 | Sortie terminal | Séquences ANSI injectées via noms de conteneurs/images ou messages moteur | Contrôles C0/`DEL`/C1 remplacés par `U+FFFD` au rendu ; messages moteur tronqués |
 | 14 | `inspect` | Divulgation de secrets par les variables d'environnement | Le type de domaine n'a aucun champ d'environnement ; l'adaptateur ne les lit pas |
 | 15 | Moteur lent ou bloqué | Déni de service par blocage indéfini de la CLI | Délai maximal fixe sur **chaque** opération ; délai client supérieur, pour un message clair plutôt qu'un abandon opaque |
+| 16 | Interface terminal | Sollicitation continue du socket Docker par une session laissée ouverte | Aucun sondage périodique : appel uniquement sur action explicite ou après une action de cycle de vie |
+| 17 | Interface terminal | Interception de touches par une session lancée hors terminal interactif | Contrôle du TTY **avant** toute connexion ; refus avec le code `2` |
 
 ## Chaîne d'approvisionnement
 
