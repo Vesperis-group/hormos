@@ -52,7 +52,10 @@ pub async fn run(service: ContainerService) -> Result<()> {
     let mut terminal = TerminalGuard::new().map_err(terminal_error)?;
     let (sender, mut receiver) = mpsc::channel(CHANNEL_CAPACITY);
     // Détruit avant `terminal` (ordre inverse de déclaration) : le fil de lecture
-    // est donc arrêté avant que le terminal ne soit rendu à l'utilisateur.
+    // est donc arrêté avant que le terminal ne soit rendu à l'utilisateur. À cet
+    // instant `receiver` est encore vivant, donc le canal encore ouvert : c'est
+    // pourquoi l'envoi côté fil doit rester annulable, quelle que soit la sortie
+    // — `q`, erreur de rendu, ou fin du canal.
     let _input = event::spawn(sender.clone());
 
     let mut app = App::new();
