@@ -10,7 +10,12 @@
 
 [workspace]
 resolver = "3"
-members = ["crates/hormos-core", "crates/hormos-docker", "crates/hormos-cli"]
+members = [
+    "crates/hormos-core",
+    "crates/hormos-docker",
+    "crates/hormos-tui",
+    "crates/hormos-cli",
+]
 
 [workspace.package]
 version = "0.0.0"
@@ -28,17 +33,26 @@ homepage = "https://github.com/Vesperis-group/hormos"
 # ne compile QUE le transport socket Unix / named pipe local. Les transports
 # distants (`http`, `ssl`, `ssh`, `websocket`) et `buildkit` ne sont pas compilés :
 # une connexion réseau implicite est donc impossible par construction.
+#
+# ratatui : bibliothèque de rendu terminal (MIT). Profil minimal également :
+# `default-features = false` + `crossterm` uniquement. Sont exclus `all-widgets`
+# (calendrier), `macros`, `layout-cache`, `underline-color`, `palette` et `serde`,
+# dont Hormos n'a pas l'usage. Le backend crossterm est réexporté par ratatui
+# (`ratatui::crossterm`) : Hormos ne déclare donc pas crossterm en direct, ce qui
+# rend tout décalage de version impossible par construction.
 [workspace.dependencies]
 async-trait = "0.1.92"
 bollard = { version = "0.21.1", default-features = false, features = ["pipe"] }
 clap = { version = "4.5", features = ["derive"] }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.20"
-tokio = { version = "1.53.1", default-features = false, features = ["macros", "rt", "time"] }
+tokio = { version = "1.53.1", default-features = false, features = ["macros", "rt", "sync", "time"] }
 
 hormos-core = { path = "crates/hormos-core", version = "0.0.0" }
 hormos-docker = { path = "crates/hormos-docker", version = "0.0.0" }
+hormos-tui = { path = "crates/hormos-tui", version = "0.0.0" }
 
 # Lints partagés par tous les crates du workspace. `unsafe` est interdit par
 # défaut (supply chain / mémoire) ; l'usage non justifié de `unwrap`/`expect` est

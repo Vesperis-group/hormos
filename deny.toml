@@ -26,9 +26,14 @@ allow = [
 ]
 # Seuil de confiance pour la détection de licence par cargo-deny.
 confidence-threshold = 0.8
-# Exceptions de licence documentées (aucune pour l'instant). Format :
-# { allow = ["..."], name = "crate", version = "*" }
-exceptions = []
+# Exceptions de licence documentées, portées au crate concerné uniquement.
+exceptions = [
+    # `foldhash` (arrivé par ratatui → kasuari → hashbrown) est sous licence
+    # Zlib : permissive, approuvée OSI et FSF, compatible MIT. L'exception reste
+    # nominative pour qu'un autre crate sous Zlib fasse toujours échouer le
+    # contrôle.
+    { allow = ["Zlib"], name = "foldhash" },
+]
 
 [bans]
 # Signale les versions multiples d'une même dépendance (poids / surface).
