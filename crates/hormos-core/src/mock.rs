@@ -37,6 +37,12 @@ pub struct MockRuntime {
     failure: Option<HormosError>,
 }
 
+impl Default for MockRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockRuntime {
     /// Faux moteur qui réussit toujours.
     pub const fn new() -> Self {
