@@ -1,12 +1,22 @@
 //! Cycle de vie du terminal.
 //!
-//! Le terminal est restauré **quoi qu'il arrive** :
+//! La restitution dépend de la façon dont le programme se termine, et il vaut
+//! mieux l'énoncer que le laisser croire :
 //!
-//! - sortie normale ou erreur : le `Drop` de [`TerminalGuard`] rend le curseur,
-//!   quitte l'écran alternatif et désactive le mode brut ;
-//! - panique : le gestionnaire installé par `ratatui::try_init` restaure l'écran
-//!   avant de laisser la panique se propager. C'est le helper officiel de
-//!   Ratatui — Hormos ne remplace jamais le gestionnaire de panique lui-même.
+//! - **sortie normale ou erreur remontée** : le `Drop` de [`TerminalGuard`] rend
+//!   le curseur, quitte l'écran alternatif et désactive le mode brut. Le
+//!   terminal est intégralement restauré ;
+//! - **panique** : le gestionnaire installé par `ratatui::try_init` restaure
+//!   l'écran — mode brut et écran alternatif — avant de laisser la panique se
+//!   propager. C'est le helper officiel de Ratatui ; Hormos ne remplace jamais
+//!   le gestionnaire de panique lui-même. En revanche, le profil `release` du
+//!   workspace utilise `panic = "abort"` : les `Drop` **ne s'exécutent pas**, et
+//!   le curseur peut donc rester masqué. Un `reset` suffit à revenir à la
+//!   normale.
+//!
+//! Cette limite est assumée : la corriger demanderait soit d'abandonner
+//! `panic = "abort"`, soit d'installer un gestionnaire de panique propre à
+//! Hormos — deux prix trop élevés pour un curseur.
 //!
 //! Aucune de ces opérations ne nécessite `unsafe` (interdit dans le workspace).
 

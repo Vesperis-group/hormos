@@ -69,14 +69,35 @@ plutôt que de dessiner un tableau illisible.
 
 ## Restitution du terminal
 
-`TerminalGuard` restaure le mode brut, l'écran alternatif et le curseur dans son
-`Drop`, et le point d'entrée de `ratatui` installe un *panic hook* qui restaure
-l'écran avant d'afficher la panique.
+- **Sortie normale ou erreur** : le `Drop` de `TerminalGuard` rend le curseur,
+  quitte l'écran alternatif et désactive le mode brut. Le terminal est
+  intégralement restauré.
+- **Panique** : le *panic hook* installé par `ratatui` restaure l'écran avant
+  d'afficher la panique.
 
-> **Limite connue.** Le profil `release` du workspace utilise `panic = "abort"` :
-> sur une panique, les `Drop` ne s'exécutent pas. Le *panic hook* restaure alors
-> l'écran, mais **pas le curseur**. Un `reset` suffit à revenir à la normale. Le
-> profil `dev` n'est pas concerné.
+> **Limite connue et assumée.** Le profil `release` du workspace utilise
+> `panic = "abort"` : sur une panique, les `Drop` ne s'exécutent pas. Le *panic
+> hook* restaure alors le mode brut et l'écran alternatif, mais **pas le
+> curseur**, qui peut rester masqué. Un `reset` suffit à revenir à la normale. Le
+> profil `dev` n'est pas concerné. La corriger demanderait d'abandonner
+> `panic = "abort"` ou d'installer un gestionnaire de panique propre à Hormos :
+> deux prix trop élevés pour un curseur.
+
+## Arrêt du fil de lecture
+
+Le terminal ne doit jamais être restauré pendant qu'un fil lit encore l'entrée
+standard. La destruction du lecteur demande donc l'arrêt, réveille le fil, puis
+l'attend.
+
+L'envoi vers la boucle principale est **annulable** : sur un canal saturé, il
+réessaie par courtes tranches et vérifie l'arrêt entre deux tentatives, au lieu
+de s'endormir jusqu'à ce que quelqu'un vide le canal. Sans cela, une rafale de
+touches suivie d'un `q` pourrait figer la sortie : le fil attendrait un
+consommateur déjà terminé. L'arrêt ne dépend ainsi **jamais** du fait que la
+boucle principale continue à consommer.
+
+Délai maximal d'arrêt : **200 ms**, le temps que la lecture du terminal — seul
+point d'attente qu'un réveil ne peut pas interrompre — rende la main.
 
 ## Sortie non interactive
 
@@ -104,7 +125,8 @@ produit donc ni écran de contrôle, ni ouverture de socket.
 - La lecture du clavier vit sur un **fil système dédié** qui publie dans un canal
   `tokio` **borné**. Pas de `event-stream`, donc pas de `futures-core` ni de
   `signal-hook-mio` supplémentaires ; et si l'interface prend du retard, la
-  lecture ralentit au lieu d'accumuler des touches.
+  lecture ralentit au lieu d'accumuler des touches. L'envoi reste annulable, pour
+  que la contre-pression ne puisse jamais empêcher l'arrêt.
 - Les commandes partent dans leur propre tâche : un `stop` qui consomme son délai
   de grâce ne fige pas l'affichage.
 - La sélection est mémorisée **par identifiant**, pas par ligne : un
