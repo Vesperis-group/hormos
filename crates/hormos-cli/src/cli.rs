@@ -18,13 +18,19 @@ use clap::{Parser, Subcommand};
 )]
 pub struct Cli {
     /// Commande à exécuter.
+    ///
+    /// Absente, elle vaut [`Command::Tui`] : `hormos` seul ouvre l'interface
+    /// terminal, comme `htop` ou `lazygit`.
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 /// Commandes disponibles.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Ouvre l'interface terminal interactive (comportement par défaut).
+    Tui,
+
     /// Affiche les informations du moteur de conteneurs local.
     Info {
         /// Sortie JSON, stable et scriptable.
@@ -79,7 +85,7 @@ impl Command {
     #[must_use]
     pub fn reference(&self) -> Option<&str> {
         match self {
-            Self::Info { .. } | Self::Ps { .. } => None,
+            Self::Tui | Self::Info { .. } | Self::Ps { .. } => None,
             Self::Inspect { reference, .. }
             | Self::Start { reference }
             | Self::Stop { reference }
@@ -104,10 +110,10 @@ mod tests {
         let cli = Cli::try_parse_from(["hormos", "ps", "--all", "--json"]);
         assert!(matches!(
             cli.map(|c| c.command),
-            Ok(Command::Ps {
+            Ok(Some(Command::Ps {
                 all: true,
                 json: true
-            })
+            }))
         ));
     }
 
@@ -116,10 +122,10 @@ mod tests {
         let cli = Cli::try_parse_from(["hormos", "ps"]);
         assert!(matches!(
             cli.map(|c| c.command),
-            Ok(Command::Ps {
+            Ok(Some(Command::Ps {
                 all: false,
                 json: false
-            })
+            }))
         ));
     }
 
@@ -134,8 +140,15 @@ mod tests {
     }
 
     #[test]
-    fn no_subcommand_is_an_error() {
-        assert!(Cli::try_parse_from(["hormos"]).is_err());
+    fn no_subcommand_opens_the_terminal_interface() {
+        assert!(matches!(
+            Cli::try_parse_from(["hormos"]).map(|c| c.command),
+            Ok(None)
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["hormos", "tui"]).map(|c| c.command),
+            Ok(Some(Command::Tui))
+        ));
     }
 
     #[test]
@@ -154,7 +167,8 @@ mod tests {
         let reference = |args: [&str; 3]| {
             Cli::try_parse_from(args)
                 .ok()
-                .and_then(|c| c.command.reference().map(ToOwned::to_owned))
+                .and_then(|c| c.command)
+                .and_then(|command| command.reference().map(ToOwned::to_owned))
         };
         assert_eq!(
             reference(["hormos", "inspect", "web"]).as_deref(),
@@ -172,7 +186,8 @@ mod tests {
 
         let listing = Cli::try_parse_from(["hormos", "ps"])
             .ok()
-            .and_then(|c| c.command.reference().map(ToOwned::to_owned));
+            .and_then(|c| c.command)
+            .and_then(|command| command.reference().map(ToOwned::to_owned));
         assert_eq!(listing, None);
     }
 }
