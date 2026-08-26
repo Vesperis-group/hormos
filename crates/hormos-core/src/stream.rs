@@ -19,6 +19,15 @@
 //! l'appelant, puis relâché. Les bornes de rétention sont la responsabilité de
 //! l'interface qui affiche (voir `docs/streams.md`).
 //!
+//! # Ouverture paresseuse
+//!
+//! Ouvrir un flux ne parle pas encore au moteur : pour Docker, la requête HTTP
+//! n'est émise qu'à la **première** lecture. La conséquence est visible sur les
+//! événements, qui ne se rejouent pas : s'abonner puis agir sur le moteur sans
+//! avoir lu une seule fois manquerait les événements de cette action. Il faut
+//! donc commencer à lire avant de provoquer ce que l'on veut observer. Un test
+//! d'intégration l'exige explicitement.
+//!
 //! # Annulation
 //!
 //! Détruire un [`RuntimeStream`] libère la ressource sous-jacente — pour Docker,
