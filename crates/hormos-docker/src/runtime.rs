@@ -22,13 +22,17 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bollard::Docker;
 use bollard::query_parameters::{
-    InspectContainerOptionsBuilder, ListContainersOptionsBuilder, RestartContainerOptionsBuilder,
-    StartContainerOptionsBuilder, StopContainerOptionsBuilder,
+    EventsOptionsBuilder, InspectContainerOptionsBuilder, ListContainersOptionsBuilder,
+    LogsOptionsBuilder, RestartContainerOptionsBuilder, StartContainerOptionsBuilder,
+    StopContainerOptionsBuilder,
 };
 use hormos_core::domain::{ContainerDetails, ContainerSummary, SystemInfo};
 use hormos_core::error::{HormosError, Result};
+use hormos_core::events::RuntimeEvent;
+use hormos_core::logs::{LogChunk, LogOptions};
 use hormos_core::reference::ContainerRef;
 use hormos_core::runtime::ContainerRuntime;
+use hormos_core::stream::RuntimeStream;
 
 use crate::endpoint::LocalEndpoint;
 use crate::error::map_error;
@@ -248,6 +252,48 @@ impl ContainerRuntime for DockerRuntime {
                 .restart_container(reference.as_str(), Some(options)),
         )
         .await
+    }
+
+    fn container_logs(
+        &self,
+        reference: &ContainerRef,
+        options: &LogOptions,
+    ) -> Result<RuntimeStream<LogChunk>> {
+        let mut request = LogsOptionsBuilder::new()
+            .stdout(true)
+            .stderr(true)
+            .follow(options.follow)
+            .timestamps(options.timestamps);
+        // Bollard attend « all » ou un nombre décimal ; la valeur a déjà été
+        // validée et bornée par `LogTail`, elle n'est jamais une saisie brute.
+        request = match options.tail.lines() {
+            None => request.tail("all"),
+            Some(lines) => request.tail(&lines.to_string()),
+        };
+
+        // Volontairement **hors** de `guard` : un suivi doit pouvoir rester
+        // ouvert des heures. Voir `timeouts` pour la portée réelle du délai.
+        let source = self.docker.logs(reference.as_str(), Some(request.build()));
+        let endpoint = self.endpoint.clone();
+        let reference = reference.as_str().to_owned();
+        Ok(RuntimeStream::mapped(source, move |item| match item {
+            Ok(output) => Ok(mapping::to_log_chunk(output)),
+            Err(error) => Err(map_error(&error, &endpoint, Some(&reference))),
+        }))
+    }
+
+    fn runtime_events(&self) -> Result<RuntimeStream<RuntimeEvent>> {
+        // Aucun filtre n'est posé : le moteur ne filtre que ce qu'il connaît, et
+        // un filtre mal formé donne un flux silencieusement vide. Hormos préfère
+        // tout recevoir et ne modéliser que ce qu'il affiche.
+        let source = self
+            .docker
+            .events(Some(EventsOptionsBuilder::new().build()));
+        let endpoint = self.endpoint.clone();
+        Ok(RuntimeStream::mapped(source, move |item| match item {
+            Ok(message) => Ok(mapping::to_runtime_event(message)),
+            Err(error) => Err(map_error(&error, &endpoint, None)),
+        }))
     }
 }
 
