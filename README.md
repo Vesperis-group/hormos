@@ -9,9 +9,10 @@ métier.
 
 > ⚠️ **État : early development.** Hormos sait aujourd'hui **observer et piloter
 > le cycle de vie** des conteneurs d'un moteur Docker **local** (`info`, `ps`,
-> `inspect`, `start`, `stop`, `restart`), en ligne de commande comme dans une
-> interface terminal. Il ne sait ni créer, ni supprimer un conteneur, ni gérer
-> images, volumes, réseaux, logs ou Compose.
+> `inspect`, `start`, `stop`, `restart`), et **suivre** journaux et événements
+> (`logs`, `events`), en ligne de commande comme dans une interface terminal. Il
+> ne sait ni créer, ni supprimer un conteneur, ni gérer images, volumes, réseaux
+> ou Compose.
 
 ## Vision
 
@@ -42,17 +43,29 @@ hormos start <ref>          # idempotent
 hormos stop <ref>           # idempotent
 hormos restart <ref>
 
+hormos logs <ref>           # journal complet, puis rend la main
+hormos logs <ref> -f        # suit jusqu'à Ctrl+C
+hormos logs <ref> --tail 20 --timestamps
+hormos events               # événements du moteur, jusqu'à Ctrl+C
+
 hormos info --json          # sortie scriptable (aussi sur `ps` et `inspect`)
+hormos events --json        # NDJSON : un objet complet par ligne
 ```
 
 `<ref>` est un **nom** ou un **identifiant** de conteneur. Les références sont
 validées avant tout appel au moteur.
 
+Interrompre un suivi par `Ctrl+C` est un **succès** (code `0`). Vers un terminal,
+le journal est assaini ; vers un fichier ou un tube, les octets sont recopiés à
+l'identique, pour ne casser aucune chaîne de traitement. Voir
+[`docs/streams.md`](docs/streams.md).
+
 ### Interface terminal
 
 `hormos` sans argument ouvre une vue plein écran des conteneurs : navigation au
-clavier, filtre, détail, `start` / `stop` / `restart`. Elle n'interroge le moteur
-que sur action explicite — aucun sondage périodique. Hors d'un terminal
+clavier, filtre, détail, `start` / `stop` / `restart`, journal (`l`) et
+événements (`e`). Elle n'interroge le moteur que sur action explicite — aucun
+sondage périodique, aucune reconnexion automatique. Hors d'un terminal
 interactif (redirection, tube, CI), elle refuse de démarrer avec le code `2`,
 avant même d'ouvrir le socket.
 

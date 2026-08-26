@@ -79,12 +79,29 @@ cible **Docker via Bollard**. Le trait étant *object-safe*, le cœur manipule u
 `Arc<dyn ContainerRuntime>` : un faux déterministe (tests) ou une future
 implémentation Podman s'y branchent sans toucher aux interfaces.
 
+### Flux temps réel
+
+Les journaux et les événements traversent la même abstraction, `RuntimeStream<T>`
+(voir [streams.md](streams.md)). Elle est **opaque** : les interfaces ne voient
+ni `futures`, ni Bollard, ni HTTP. Le trait reste *object-safe* parce que le type
+renvoyé est concret et contient un flux boxé — un `impl Stream` ne passerait pas
+derrière `dyn`.
+
+Un flux **n'accumule rien** ; toute la rétention appartient à ce qui affiche. Le
+détruire l'annule, sans jeton ni message d'arrêt. Sa requête n'est émise qu'à la
+première lecture.
+
 ### Politique de délais
 
-Aucune opération ne peut bloquer indéfiniment : chaque appel est encadré par un
-délai maximal fixe (`crates/hormos-docker/src/timeouts.rs`). Le délai du client
-HTTP est volontairement supérieur à tous les autres, afin que ce soit toujours
-Hormos qui tranche, avec un message clair, et jamais un abandon opaque du client.
+Aucune opération **ponctuelle** ne peut bloquer indéfiniment : chaque appel est
+encadré par un délai maximal fixe (`crates/hormos-docker/src/timeouts.rs`). Le
+délai du client HTTP est volontairement supérieur à tous les autres, afin que ce
+soit toujours Hormos qui tranche, avec un message clair, et jamais un abandon
+opaque du client.
+
+Les **flux** en sont exclus, et c'est voulu : `hormos logs -f` doit pouvoir vivre
+des heures. Leur bornage est ailleurs — mémoire bornée côté affichage, et
+annulation à la main de l'utilisateur.
 
 ## Compose
 
@@ -110,6 +127,7 @@ uniquement là où l'interactivité l'exige.
 ## Voir aussi
 
 - [tui.md](tui.md)
+- [streams.md](streams.md)
 - [security-model.md](security-model.md)
 - [threat-model.md](threat-model.md)
 - [ADR](adr/)

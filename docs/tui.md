@@ -12,9 +12,10 @@ Le TUI expose exactement ce que la CLI sait déjà faire, rien de plus :
 
 - lister les conteneurs (en cours, ou tous) ;
 - inspecter un conteneur ;
-- `start`, `stop`, `restart`.
+- `start`, `stop`, `restart` ;
+- suivre le **journal** d'un conteneur et les **événements** du moteur.
 
-Il ne crée pas, ne supprime pas, n'attache aucun flux, ne lit aucun journal.
+Il ne crée pas, ne supprime pas, n'exécute aucune commande dans un conteneur.
 
 ## Touches
 
@@ -26,10 +27,17 @@ Il ne crée pas, ne supprime pas, n'attache aucun flux, ne lit aucun journal.
 | `R`             | Rafraîchir la liste                                        |
 | `/`             | Filtrer ; `Échap` annule, `Entrée` valide                  |
 | `i`             | Détail du conteneur sélectionné                            |
+| `l`             | Journal du conteneur sélectionné                           |
+| `e`             | Événements du moteur                                       |
 | `s`             | `start` si arrêté, `stop` si en cours                      |
 | `r`             | `restart`                                                  |
 | `?`             | Aide                                                       |
 | `Échap`         | Ferme le panneau ouvert ; sur la liste, quitte             |
+
+Devant un journal ou des événements, les touches changent de sens : `↑` `↓`
+`k` `j` défilent, `PgPréc` / `PgSuiv` page par page, `Début` / `Fin` vont aux
+extrémités — `Fin` rétablit le suivi automatique —, `R` reconnecte et `Échap` ou
+`q` reviennent à la liste. Les touches de la liste n'y ont aucun effet.
 
 La touche `s` est **contextuelle** : elle applique le verbe qui a un sens pour
 l'état courant, et rien d'autre. Une action déjà en vol sur un conteneur bloque
@@ -38,9 +46,12 @@ toute nouvelle action sur ce même conteneur jusqu'à son résultat.
 ## Ce que le TUI ne fait pas
 
 - **Aucun sondage périodique.** Hormos n'interroge le moteur que sur une action
-  explicite (`a`, `R`, `i`, une action de cycle de vie) ou juste après une
-  action. Un TUI ouvert et inactif ne produit **aucun trafic** sur le socket
-  Docker : c'est un choix de sécurité autant que de sobriété.
+  explicite (`a`, `R`, `i`, `l`, `e`, une action de cycle de vie) ou juste après
+  une action. Un TUI ouvert et inactif, sans flux ouvert, ne produit **aucun
+  trafic** sur le socket Docker : c'est un choix de sécurité autant que de
+  sobriété. Un flux, lui, est ouvert **à la demande** et un seul à la fois.
+- **Aucune reconnexion automatique.** Un flux interrompu le reste jusqu'à ce que
+  l'utilisateur appuie sur `R` : rien ne martèle un moteur en panne.
 - **Aucune modification destructive.** Pas de suppression, pas de `prune`, pas
   d'exécution de commande dans un conteneur.
 - **Aucun accès distant.** Le TUI hérite de la résolution de point de
@@ -109,26 +120,31 @@ produit donc ni écran de contrôle, ni ouverture de socket.
 ## Architecture interne
 
 ```
-      ┌──────────────┐   Message   ┌─────────┐   Command   ┌──────────────────┐
-      │ fil clavier  │────────────▶│   App   │────────────▶│ ContainerService │
-      │ (crossterm)  │  canal (64) │  (pur)  │  tâche      │   (hormos-core)  │
-      └──────────────┘             └────┬────┘  tokio      └────────┬─────────┘
-                                        │ rendu                     │ Message
-                                        ▼                           │
-                                   ┌─────────┐                      │
-                                   │   ui    │◀─────────────────────┘
-                                   └─────────┘
+   ┌──────────────┐  contrôle (64)  ┌─────────┐   Command   ┌──────────────────┐
+   │ fil clavier  │────────────────▶│   App   │────────────▶│ ContainerService │
+   │ (crossterm)  │                 │  (pur)  │  tâche      │   (hormos-core)  │
+   └──────────────┘                 └────┬────┘  tokio      └────────┬─────────┘
+   ┌──────────────┐   flux (256)         │ rendu (16 ms)             │
+   │ tâche de flux│──────────────────────┤                           │ Message
+   └──────────────┘                      ▼                           │
+          ▲                         ┌─────────┐                      │
+          └── RuntimeStream ────────│   ui    │◀─────────────────────┘
+                                    └─────────┘
 ```
 
 - `app` est **pur** : ni terminal, ni Docker, ni horloge. Ses transitions sont
   testées intégralement (`Message` en entrée, `Option<Command>` en sortie).
 - La lecture du clavier vit sur un **fil système dédié** qui publie dans un canal
-  `tokio` **borné**. Pas de `event-stream`, donc pas de `futures-core` ni de
-  `signal-hook-mio` supplémentaires ; et si l'interface prend du retard, la
-  lecture ralentit au lieu d'accumuler des touches. L'envoi reste annulable, pour
-  que la contre-pression ne puisse jamais empêcher l'arrêt.
+  `tokio` **borné**, et non sur l'`event-stream` de crossterm : si l'interface
+  prend du retard, la lecture ralentit au lieu d'accumuler des touches, et
+  l'envoi reste annulable, pour que la contre-pression ne puisse jamais empêcher
+  l'arrêt. Un flux asynchrone de touches n'offrirait ni l'un ni l'autre.
 - Les commandes partent dans leur propre tâche : un `stop` qui consomme son délai
   de grâce ne fige pas l'affichage.
 - La sélection est mémorisée **par identifiant**, pas par ligne : un
   rafraîchissement qui réordonne la liste ne déplace pas le curseur sous les
   doigts de l'utilisateur.
+- Les flux arrivent par un **second canal borné**, et la sélection est biaisée
+  dans l'ordre contrôle, rendu, flux : un conteneur qui inonde sa sortie ne peut
+  ni retarder une touche, ni empêcher l'écran de se redessiner. Le détail des
+  bornes, des générations et du défilement est dans [streams.md](streams.md).
