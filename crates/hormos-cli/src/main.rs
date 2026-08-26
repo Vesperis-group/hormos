@@ -15,6 +15,7 @@
 mod cli;
 mod output;
 
+use std::io::IsTerminal;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -72,14 +73,25 @@ const fn exit_code(kind: ErrorKind) -> u8 {
 }
 
 async fn run(cli: Cli) -> Result<()> {
+    // Sans sous-commande, `hormos` ouvre l'interface terminal.
+    let command = cli.command.unwrap_or(Command::Tui);
+
     // La validation précède toute connexion : une référence invalide échoue sans
     // même ouvrir le socket Docker.
-    if let Some(reference) = cli.command.reference() {
+    if let Some(reference) = command.reference() {
         hormos_core::ContainerRef::new(reference)?;
+    }
+    // Le contrôle du TTY précède lui aussi la connexion : rediriger la sortie
+    // d'`hormos` ne doit pas toucher au moteur.
+    if matches!(command, Command::Tui) && !std::io::stdout().is_terminal() {
+        return Err(HormosError::invalid_input(
+            "l'interface terminal exige un terminal interactif ; utilisez « hormos ps »",
+        ));
     }
 
     let service = connect().await?;
-    match cli.command {
+    match command {
+        Command::Tui => hormos_tui::run(service).await,
         Command::Info { json } => {
             let info = service.system_info().await?;
             emit(json, &info, || output::render_info(&info))

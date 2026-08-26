@@ -15,6 +15,12 @@ async-trait.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
+# `mock` expose le faux moteur déterministe aux tests des autres crates du
+# workspace. Aucune crate ne l'active en dépendance normale : il n'entre donc
+# jamais dans le binaire `hormos`.
+[features]
+mock = []
+
 [dev-dependencies]
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }

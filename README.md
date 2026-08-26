@@ -9,8 +9,9 @@ métier.
 
 > ⚠️ **État : early development.** Hormos sait aujourd'hui **observer et piloter
 > le cycle de vie** des conteneurs d'un moteur Docker **local** (`info`, `ps`,
-> `inspect`, `start`, `stop`, `restart`). Il ne sait ni créer, ni supprimer un
-> conteneur, ni gérer images, volumes, réseaux, logs ou Compose.
+> `inspect`, `start`, `stop`, `restart`), en ligne de commande comme dans une
+> interface terminal. Il ne sait ni créer, ni supprimer un conteneur, ni gérer
+> images, volumes, réseaux, logs ou Compose.
 
 ## Vision
 
@@ -31,6 +32,8 @@ Pré-requis : un moteur **Docker local** accessible par socket Unix, et un
 utilisateur autorisé à le lire (typiquement, appartenance au groupe `docker`).
 
 ```bash
+hormos                      # interface terminal (identique à `hormos tui`)
+
 hormos info                 # version du moteur, API négociée, compteurs
 hormos ps                   # conteneurs en cours d'exécution
 hormos ps --all             # y compris les conteneurs arrêtés
@@ -44,6 +47,16 @@ hormos info --json          # sortie scriptable (aussi sur `ps` et `inspect`)
 
 `<ref>` est un **nom** ou un **identifiant** de conteneur. Les références sont
 validées avant tout appel au moteur.
+
+### Interface terminal
+
+`hormos` sans argument ouvre une vue plein écran des conteneurs : navigation au
+clavier, filtre, détail, `start` / `stop` / `restart`. Elle n'interroge le moteur
+que sur action explicite — aucun sondage périodique. Hors d'un terminal
+interactif (redirection, tube, CI), elle refuse de démarrer avec le code `2`,
+avant même d'ouvrir le socket.
+
+Touches et garanties : [`docs/tui.md`](docs/tui.md).
 
 ### Point de terminaison
 
@@ -76,13 +89,15 @@ même pas compilés dans le binaire.
 ```
             +-----------------------------+
  CLI        |         hormos-core          |
- (TUI, API, |  ContainerRuntime (trait)   |-> hormos-docker (Bollard, socket local)
-  Web à     |  Compose = driver séparé     |-> `docker compose` (à venir)
-  venir)  ->+-----------------------------+
+ TUI        |  ContainerRuntime (trait)   |-> hormos-docker (Bollard, socket local)
+ (API, Web  |  Compose = driver séparé     |-> `docker compose` (à venir)
+  à venir)->+-----------------------------+
 ```
 
 - Les interfaces ne contiennent **aucune** logique Docker : elles passent par
   `hormos-core`, qui ne connaît que le trait `ContainerRuntime`.
+- `hormos-tui` ne dépend ni de Bollard ni de `hormos-docker` : il reçoit un
+  `ContainerService` déjà construit, exactement comme la CLI.
 - `hormos-docker` est le **seul** crate à dépendre de Bollard, et il n'est
   compilé qu'avec le transport socket local.
 - Compose sera un **driver séparé** qui appelle `docker compose` — jamais

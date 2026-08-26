@@ -19,8 +19,13 @@ pub mod reference;
 pub mod runtime;
 pub mod service;
 
-#[cfg(test)]
-mod mock;
+/// Faux moteur déterministe, destiné aux **tests** des interfaces.
+///
+/// Activé automatiquement pour les tests de cette crate, et exposé aux autres
+/// crates du workspace via la feature `mock` (déclarée en `dev-dependencies`
+/// uniquement : aucun binaire de production ne l'embarque).
+#[cfg(any(test, feature = "mock"))]
+pub mod mock;
 
 pub use error::{HormosError, Result};
 pub use reference::ContainerRef;

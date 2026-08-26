@@ -35,7 +35,8 @@ fn hormos() -> Command {
 #[test]
 fn help_lists_every_command() {
     hormos().arg("--help").assert().success().stdout(
-        contains("info")
+        contains("tui")
+            .and(contains("info"))
             .and(contains("ps"))
             .and(contains("inspect"))
             .and(contains("start"))
@@ -54,8 +55,17 @@ fn version_is_printed() {
 }
 
 #[test]
-fn missing_subcommand_is_a_usage_error() {
-    hormos().assert().code(EXIT_INVALID_INPUT);
+fn the_interface_refuses_to_start_without_a_terminal() {
+    // Sans sous-commande, `hormos` vise le TUI. Sortie redirigée : il refuse
+    // clairement, avant même d'ouvrir le socket Docker.
+    for args in [vec![], vec!["tui"]] {
+        hormos()
+            .args(&args)
+            .assert()
+            .code(EXIT_INVALID_INPUT)
+            .stdout(predicates::str::is_empty())
+            .stderr(contains("terminal"));
+    }
 }
 
 #[test]

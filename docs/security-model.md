@@ -61,6 +61,18 @@ Toute chaîne provenant du moteur est donc assainie au rendu : les contrôles C0
 Les messages d'erreur renvoyés par le moteur subissent le même traitement et sont
 tronqués, afin qu'une erreur ne devienne pas un canal d'affichage arbitraire.
 
+Le TUI, qui écrit en plein écran et positionne lui-même le curseur, applique la
+**même** fonction d'assainissement à chaque cellule qu'il dessine ; un test fige
+qu'aucune chaîne venue du moteur ne peut piloter l'émulateur de terminal.
+
+## L'interface terminal n'interroge le moteur que sur demande
+
+Le TUI ne sonde **jamais** le moteur en arrière-plan : il n'émet un appel que
+pour une action explicite de l'utilisateur, ou juste après une action de cycle de
+vie. Une session ouverte et inactive ne produit aucun trafic sur le socket
+Docker. Hors d'un terminal interactif, `hormos` et `hormos tui` refusent de
+démarrer **avant** d'ouvrir le socket. Voir [tui.md](tui.md).
+
 ## Les variables d'environnement ne sont jamais lues
 
 `docker inspect` expose la configuration complète d'un conteneur, y compris ses

@@ -1,0 +1,28 @@
+[package]
+name = "hormos-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Interface terminal d'Hormos (control plane conteneurs local-first)."
+readme = "../../README.md"
+
+# Le TUI est une **bibliothèque** : il ne produit pas de binaire et ne choisit
+# aucun moteur. Il reçoit un `ContainerService` déjà construit et ne dépend donc
+# ni de `bollard`, ni de `hormos-docker` (vérifiable par `cargo tree -p
+# hormos-tui`). C'est la même règle que pour la CLI : « One engine. Every
+# interface. »
+[dependencies]
+hormos-core.workspace = true
+ratatui.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+
+[dev-dependencies]
+hormos-core = { workspace = true, features = ["mock"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

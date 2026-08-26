@@ -23,7 +23,12 @@ Invariants durables d'Hormos. Court par conception : pas de détail volatil.
 - Toujours une PR vers `main`. Aucun push direct (seule exception historique : le
   seed initial du dépôt vide).
 - Conventional Commits, **atomiques et signés**.
-- Pas de `feat:` tant qu'une release *minor* n'est pas voulue.
+- Le type reflète la **nature réelle** du changement : une nouvelle capacité
+  produit est un `feat:`. Ne jamais la déguiser en `chore:` pour éviter un bump —
+  publier est une décision distincte, tenue par le garde du pipeline.
+- **Jamais** de co-auteur d'assistant IA — ni `Co-authored-by: Copilot`, ni
+  `GitHub Copilot`, ni `Claude`, ni aucun équivalent : l'historique n'attribue
+  qu'à des personnes.
 
 ## Supply chain
 

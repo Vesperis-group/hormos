@@ -3,8 +3,8 @@
 > « One engine. Every interface. »
 
 Hormos est un *control plane* conteneurs **local-first** et **security-first**.
-Ce document décrit l'architecture **cible** ; à ce stade, la CLI, le cœur et
-l'adaptateur Docker existent — les autres interfaces restent à venir.
+Ce document décrit l'architecture **cible** ; à ce stade, la CLI, le TUI, le cœur
+et l'adaptateur Docker existent — les autres interfaces restent à venir.
 
 ## Principe fondateur
 
@@ -42,11 +42,14 @@ logique Docker et se contentent d'appeler le cœur.
   Unix local uniquement. Seul crate à connaître Docker.
 - `crates/hormos-cli` : binaire `hormos`. Analyse d'arguments, rendu, codes de
   sortie. Ne nomme `hormos-docker` qu'à son point de composition (`main`).
+- `crates/hormos-tui` : interface terminal (ratatui). **Ne dépend ni de Bollard
+  ni de `hormos-docker`** : elle reçoit un `ContainerService` déjà construit.
+  Voir [tui.md](tui.md).
 
 À venir (non créés tant qu'ils ne sont pas réellement utiles) :
 
 - driver Compose ;
-- `hormos-api`, `hormos-tui`, `hormos-web` : adaptateurs.
+- `hormos-api`, `hormos-web` : adaptateurs.
 
 Aucune crate vide n'est créée d'avance (anti-surengineering).
 
@@ -63,6 +66,10 @@ hormos ps --all
 
 Le service **valide avant de déléguer** : une référence invalide n'atteint
 jamais le moteur, et n'ouvre même pas le socket.
+
+Le TUI emprunte exactement le même chemin : ses touches produisent des messages,
+que son état pur traduit en commandes exécutées **hors du rendu** par le même
+`ContainerService`. Un second adaptateur, aucun second cœur.
 
 ## Abstraction runtime
 
@@ -102,6 +109,7 @@ uniquement là où l'interactivité l'exige.
 
 ## Voir aussi
 
+- [tui.md](tui.md)
 - [security-model.md](security-model.md)
 - [threat-model.md](threat-model.md)
 - [ADR](adr/)

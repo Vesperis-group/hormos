@@ -18,6 +18,7 @@
 # Compilation / exécution
 cargo build --workspace --locked
 cargo run -p hormos-cli -- info
+cargo run -p hormos-cli            # interface terminal
 
 # Tests (sans Docker)
 cargo test --workspace --all-features --locked
@@ -34,6 +35,33 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
 cargo build --workspace --all-features --locked --release
 ```
+
+## Travailler sur l'interface terminal
+
+`crates/hormos-tui` sépare volontairement l'état du rendu :
+
+- `app.rs` est **pur** — pas de terminal, pas de Docker, pas d'horloge. Tout
+  comportement s'y teste en envoyant un `Message` et en observant l'état et
+  l'éventuelle `Command` renvoyée. **Toute nouvelle interaction se teste ici**,
+  pas à l'écran ;
+- `ui.rs` se teste avec le `TestBackend` de ratatui : on rend dans un tampon en
+  mémoire et on affirme sur le texte obtenu, à plusieurs tailles ;
+- `event.rs` et `terminal.rs` sont les seuls à toucher au terminal réel ; ils
+  restent minces à dessein.
+
+Le crate ne doit **jamais** acquérir de dépendance Docker. Le garde-fou :
+
+```bash
+cargo tree -p hormos-tui -e normal | grep -E "bollard|hormos-docker"   # doit être vide
+```
+
+Essai manuel :
+
+```bash
+cargo run -p hormos-cli            # ou `cargo run -p hormos-cli -- tui`
+```
+
+Voir [tui.md](tui.md) pour les touches et les garanties.
 
 ## Tests contre un vrai moteur Docker
 
