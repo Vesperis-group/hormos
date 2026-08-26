@@ -5,6 +5,7 @@
 //! choix de conception, pas un oubli (voir `docs/security-model.md`).
 
 use clap::{Parser, Subcommand};
+use hormos_core::logs::LogTail;
 
 /// Control plane conteneurs local-first, orienté sécurité.
 #[derive(Debug, Parser)]
@@ -76,6 +77,39 @@ pub enum Command {
         /// Nom ou identifiant du conteneur.
         reference: String,
     },
+
+    /// Affiche le journal d'un conteneur.
+    Logs {
+        /// Nom ou identifiant du conteneur.
+        reference: String,
+
+        /// Continue à suivre le journal jusqu'à `Ctrl+C`.
+        #[arg(short, long)]
+        follow: bool,
+
+        /// Nombre de lignes d'historique : un entier, ou `all`.
+        #[arg(long, default_value = "all", value_parser = parse_tail)]
+        tail: LogTail,
+
+        /// Préfixe chaque ligne de l'horodatage fourni par le moteur.
+        #[arg(long)]
+        timestamps: bool,
+    },
+
+    /// Suit les événements du moteur de conteneurs.
+    Events {
+        /// Sortie NDJSON : un objet complet par ligne, lisible au fil de l'eau.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// Valide `--tail` dès l'analyse de la ligne de commande.
+///
+/// Une valeur hors bornes est ainsi refusée avant toute connexion au moteur, et
+/// avec le code de sortie d'usage.
+fn parse_tail(value: &str) -> std::result::Result<LogTail, String> {
+    LogTail::parse(value).map_err(|error| error.to_string())
 }
 
 impl Command {
@@ -85,11 +119,12 @@ impl Command {
     #[must_use]
     pub fn reference(&self) -> Option<&str> {
         match self {
-            Self::Tui | Self::Info { .. } | Self::Ps { .. } => None,
+            Self::Tui | Self::Info { .. } | Self::Ps { .. } | Self::Events { .. } => None,
             Self::Inspect { reference, .. }
             | Self::Start { reference }
             | Self::Stop { reference }
-            | Self::Restart { reference } => Some(reference),
+            | Self::Restart { reference }
+            | Self::Logs { reference, .. } => Some(reference),
         }
     }
 }
@@ -97,6 +132,7 @@ impl Command {
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
+    use hormos_core::logs::LogTail;
 
     use super::{Cli, Command};
 
@@ -189,5 +225,73 @@ mod tests {
             .and_then(|c| c.command)
             .and_then(|command| command.reference().map(ToOwned::to_owned));
         assert_eq!(listing, None);
+
+        assert_eq!(
+            reference(["hormos", "logs", "web"]).as_deref(),
+            Some("web"),
+            "« logs » doit être validé avant toute connexion"
+        );
+    }
+
+    #[test]
+    fn logs_defaults_to_the_whole_history_without_following() {
+        assert!(matches!(
+            Cli::try_parse_from(["hormos", "logs", "web"]).map(|c| c.command),
+            Ok(Some(Command::Logs {
+                follow: false,
+                tail: LogTail::All,
+                timestamps: false,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn logs_accepts_its_flags() {
+        assert!(matches!(
+            Cli::try_parse_from([
+                "hormos",
+                "logs",
+                "web",
+                "-f",
+                "--tail",
+                "20",
+                "--timestamps"
+            ])
+            .map(|c| c.command),
+            Ok(Some(Command::Logs {
+                follow: true,
+                tail: LogTail::Lines(20),
+                timestamps: true,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn logs_rejects_an_out_of_range_tail_at_parse_time() {
+        for value in ["-1", "abc", "999999999", ""] {
+            assert!(
+                Cli::try_parse_from(["hormos", "logs", "web", "--tail", value]).is_err(),
+                "--tail {value} accepté à tort"
+            );
+        }
+    }
+
+    #[test]
+    fn logs_requires_a_reference() {
+        assert!(Cli::try_parse_from(["hormos", "logs"]).is_err());
+    }
+
+    #[test]
+    fn events_takes_no_reference_and_defaults_to_a_table() {
+        assert!(matches!(
+            Cli::try_parse_from(["hormos", "events"]).map(|c| c.command),
+            Ok(Some(Command::Events { json: false }))
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["hormos", "events", "--json"]).map(|c| c.command),
+            Ok(Some(Command::Events { json: true }))
+        ));
     }
 }

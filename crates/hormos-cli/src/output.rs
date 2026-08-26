@@ -29,6 +29,19 @@ pub fn to_json<T: serde::Serialize>(value: &T) -> Result<String, serde_json::Err
     serde_json::to_string_pretty(value)
 }
 
+/// Sérialise une valeur en JSON **compact**, sur une seule ligne.
+///
+/// Utilisé par les flux, dont la sortie machine est du NDJSON : un objet par
+/// ligne, consommable au fil de l'eau plutôt qu'à la fin d'un tableau qui, pour
+/// un flux suivi, n'arriverait jamais.
+///
+/// # Errors
+///
+/// Renvoie l'erreur de `serde_json` si la sérialisation échoue.
+pub fn to_json_line<T: serde::Serialize>(value: &T) -> Result<String, serde_json::Error> {
+    serde_json::to_string(value)
+}
+
 /// Rendu texte des informations moteur.
 #[must_use]
 pub fn render_info(info: &SystemInfo) -> String {
