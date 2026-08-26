@@ -65,12 +65,52 @@ Le TUI, qui écrit en plein écran et positionne lui-même le curseur, applique 
 **même** fonction d'assainissement à chaque cellule qu'il dessine ; un test fige
 qu'aucune chaîne venue du moteur ne peut piloter l'émulateur de terminal.
 
+## Le contenu d'un journal est arbitraire
+
+Un journal de conteneur est écrit par un processus quelconque : c'est l'entrée la
+moins fiable qu'Hormos manipule. Elle est traitée séparément, car une politique
+qui supprimerait *tout* contrôle rendrait le journal illisible.
+
+Les octets sont décodés de façon incrémentale : `\n` et `\t` sont conservés,
+`\r\n` devient `\n`, tout autre contrôle et tout UTF-8 invalide deviennent
+`U+FFFD`. Une ligne est tronquée à 16 Kio avec un marqueur explicite, et le
+report d'une séquence UTF-8 incomplète est borné à trois octets : ni une ligne
+sans fin, ni un flux d'octets invalides ne peuvent épuiser la mémoire.
+
+L'assainissement est décidé **par sortie**, pas globalement : vers un terminal,
+les octets sont décodés ; vers un tube ou un fichier, ils sont recopiés à
+l'identique. Il n'y a pas de terminal à protéger au bout d'un tube, et altérer
+les octets casserait toute chaîne de traitement. Détail :
+[streams.md](streams.md).
+
+**Hormos ne réédite pas les secrets qu'une application écrit dans son propre
+journal** : il ne peut pas les distinguer d'une donnée ordinaire, et une
+réédaction approximative donnerait une fausse assurance. Sur ce point,
+`hormos logs` n'est ni plus ni moins sûr que `docker logs`.
+
+## Un flux ne peut pas affamer l'interface
+
+Un conteneur bavard est un déni de service potentiel. Trois garanties le
+neutralisent : les canaux internes sont **bornés**, ce qui remonte une vraie
+contre-pression jusqu'au moteur au lieu de laisser une file grossir ; la
+sélection est **biaisée** dans l'ordre contrôle, rendu, flux, de sorte qu'une
+rafale ne peut ni retarder une touche ni empêcher le redessin ; et côté CLI,
+l'annulation est examinée avant le flux, pour qu'un `Ctrl+C` reste immédiat.
+
+Un seul flux est actif à la fois. L'ouverture d'un autre interrompt le précédent
+par `abort()`, ce qui referme la requête HTTP et débloque une tâche arrêtée sur
+un envoi ; l'interruption n'étant pas instantanée, chaque message porte une
+génération vérifiée à l'arrivée, afin qu'un flux abandonné n'écrive jamais dans
+le panneau d'un autre.
+
 ## L'interface terminal n'interroge le moteur que sur demande
 
 Le TUI ne sonde **jamais** le moteur en arrière-plan : il n'émet un appel que
 pour une action explicite de l'utilisateur, ou juste après une action de cycle de
-vie. Une session ouverte et inactive ne produit aucun trafic sur le socket
-Docker. Hors d'un terminal interactif, `hormos` et `hormos tui` refusent de
+vie. Une session ouverte et inactive, sans flux ouvert, ne produit aucun trafic
+sur le socket Docker. Un flux est ouvert à la demande, un seul à la fois, et une
+interruption n'est **jamais** suivie d'une reconnexion automatique : rien ne
+martèle un moteur en panne. Hors d'un terminal interactif, `hormos` et `hormos tui` refusent de
 démarrer **avant** d'ouvrir le socket. Voir [tui.md](tui.md).
 
 ## Les variables d'environnement ne sont jamais lues
@@ -133,5 +173,6 @@ sélection d'une exécution ne franchit jamais la frontière d'une autre.
 ## Voir aussi
 
 - [threat-model.md](threat-model.md)
+- [streams.md](streams.md)
 - [architecture.md](architecture.md)
 - [../SECURITY.md](../SECURITY.md)

@@ -1,13 +1,34 @@
 //! Délais maximaux appliqués à chaque opération Docker.
 //!
-//! Aucun appel ne peut bloquer indéfiniment. La politique est volontairement
-//! **interne et fixe** : pas de système de configuration à ce stade.
+//! Aucun appel **ponctuel** ne peut bloquer indéfiniment. La politique est
+//! volontairement **interne et fixe** : pas de système de configuration à ce
+//! stade.
 //!
 //! Les opérations de cycle de vie disposent d'une marge large, car le moteur
 //! accorde lui-même un délai de grâce à l'arrêt d'un conteneur (10 s par défaut,
 //! puis `SIGKILL`). Le délai de lecture/écriture du client Bollard
 //! ([`CLIENT_SECONDS`]) est supérieur à tous les autres : c'est donc toujours le
 //! délai d'Hormos qui tranche, jamais un abandon opaque du client HTTP.
+//!
+//! # Le cas des flux
+//!
+//! Les flux — journaux suivis, événements du moteur — n'ont **délibérément aucun
+//! délai maximal** : un suivi doit pouvoir rester ouvert des heures. Ils ne
+//! passent donc pas par le garde-fou des opérations ponctuelles.
+//!
+//! Ce n'est pas une faille, pour deux raisons :
+//!
+//! 1. [`CLIENT_SECONDS`] ne borne, chez Bollard, que l'obtention des **en-têtes**
+//!    de la réponse HTTP, pas la lecture de son corps. Un flux ne serait donc pas
+//!    interrompu par ce délai même si on tentait de s'en servir ainsi ; en
+//!    revanche il protège toujours l'ouverture du flux face à un démon muet.
+//! 2. La ressource reste bornée par la **durée de vie du flux** : le détruire
+//!    ferme la requête HTTP sous-jacente. Toute interface qui ouvre un flux est
+//!    responsable de le relâcher, ce qui remplace avantageusement un délai
+//!    arbitraire qui couperait un suivi légitime.
+//!
+//! La consommation mémoire, elle, ne dépend pas de la durée : le flux n'accumule
+//! rien, et les bornes d'affichage sont appliquées par l'interface.
 
 /// Délai de lecture/écriture du client Bollard (borne supérieure).
 pub const CLIENT_SECONDS: u64 = 120;

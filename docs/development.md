@@ -46,6 +46,8 @@ cargo build --workspace --all-features --locked --release
   pas à l'écran ;
 - `ui.rs` se teste avec le `TestBackend` de ratatui : on rend dans un tampon en
   mémoire et on affirme sur le texte obtenu, à plusieurs tailles ;
+- `stream.rs` porte les tampons bornés et le défilement ; il ne connaît ni
+  terminal ni moteur, et se teste en poussant des éléments ;
 - `event.rs` et `terminal.rs` sont les seuls à toucher au terminal réel ; ils
   restent minces à dessein.
 
@@ -61,7 +63,13 @@ Essai manuel :
 cargo run -p hormos-cli            # ou `cargo run -p hormos-cli -- tui`
 ```
 
-Voir [tui.md](tui.md) pour les touches et les garanties.
+Voir [tui.md](tui.md) pour les touches et les garanties, et
+[streams.md](streams.md) pour les flux.
+
+Un test de flux ne doit **jamais** attendre un temps fixe pour conclure : on
+pousse des messages dans l'état et on affirme sur ce qu'il en fait. Les
+générations rendent la stalité testable — un message d'une génération périmée
+doit être ignoré, et c'est le genre d'assertion qui protège le mieux la boucle.
 
 ## Tests contre un vrai moteur Docker
 
@@ -89,7 +97,13 @@ Règles à respecter pour tout nouveau test d'intégration :
   modification d'un conteneur préexistant ;
 - la fixture est créée via le client `docker` en sous-processus, arguments passés
   en tableau, sans shell : créer et supprimer des conteneurs est hors du
-  périmètre actuel d'Hormos.
+  périmètre actuel d'Hormos ;
+- un test de flux borne son attente par une **échéance** et ne conclut jamais sur
+  un `sleep`. Pour observer des événements, il faut **commencer à lire avant** de
+  provoquer ce qu'on veut voir : un flux n'émet sa requête qu'à la première
+  lecture, et un événement manqué ne se rejoue pas. Pour conclure au silence d'un
+  journal suivi, il faut d'abord le **drainer** : le moteur découpe l'historique
+  en un nombre de fragments qu'il choisit seul.
 
 L'identité d'exécution vient de `HORMOS_DOCKER_TEST_RUN_ID` lorsqu'elle est
 fournie (c'est le cas en CI) ; sinon la suite en dérive une, unique et

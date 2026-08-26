@@ -40,10 +40,17 @@ homepage = "https://github.com/Vesperis-group/hormos"
 # dont Hormos n'a pas l'usage. Le backend crossterm est réexporté par ratatui
 # (`ratatui::crossterm`) : Hormos ne déclare donc pas crossterm en direct, ce qui
 # rend tout décalage de version impossible par construction.
+#
+# futures-core : uniquement le trait `Stream` et ses types associés (MIT OR
+# Apache-2.0), sans exécuteur ni combinateurs. Il était déjà présent dans l'arbre
+# via bollard ; le déclarer ici n'ajoute donc **aucune** dépendance nouvelle. Seul
+# `hormos-core` le compile, pour définir `RuntimeStream` : les interfaces ne
+# nomment jamais `Stream` et n'en dépendent pas.
 [workspace.dependencies]
 async-trait = "0.1.92"
 bollard = { version = "0.21.1", default-features = false, features = ["pipe"] }
 clap = { version = "4.5", features = ["derive"] }
+futures-core = { version = "0.3.34", default-features = false, features = ["std"] }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

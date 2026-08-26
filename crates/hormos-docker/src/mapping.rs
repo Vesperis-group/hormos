@@ -8,11 +8,14 @@
 //! lues ni copiées ici. Elles contiennent régulièrement des secrets et n'ont
 //! aucune raison d'apparaître dans un `inspect` minimal.
 
+use bollard::container::LogOutput;
 use bollard::models::{
     ContainerInspectResponse, ContainerState as DockerState, ContainerSummary as DockerSummary,
-    SystemInfo as DockerSystemInfo,
+    EventMessage, EventMessageTypeEnum, SystemInfo as DockerSystemInfo,
 };
 use hormos_core::domain::{ContainerDetails, ContainerState, ContainerSummary, SystemInfo};
+use hormos_core::events::{ResourceKind, RuntimeEvent};
+use hormos_core::logs::{LogChunk, LogSource};
 
 /// Valeur affichée lorsque le moteur n'a pas fourni le champ.
 const UNKNOWN: &str = "<inconnu>";
@@ -135,16 +138,84 @@ pub(crate) fn to_system_info(
     }
 }
 
+/// Traduit un fragment de journal Bollard vers le domaine.
+///
+/// Les octets sont recopiés tels quels : ni décodage, ni assainissement, ni
+/// découpage. Ces trois responsabilités appartiennent au rendu (voir
+/// [`hormos_core::logs`]), afin que toutes les interfaces partagent exactement la
+/// même politique.
+///
+/// `StdIn` est replié sur [`LogSource::Console`] : le moteur ne l'émet que pour
+/// un conteneur attaché à un terminal, où les sorties ne sont pas séparées.
+#[must_use]
+pub(crate) fn to_log_chunk(output: LogOutput) -> LogChunk {
+    let (source, message) = match output {
+        LogOutput::StdOut { message } => (LogSource::Stdout, message),
+        LogOutput::StdErr { message } => (LogSource::Stderr, message),
+        LogOutput::Console { message } | LogOutput::StdIn { message } => {
+            (LogSource::Console, message)
+        }
+    };
+    LogChunk::new(source, message.to_vec())
+}
+
+/// Traduit un événement Bollard vers le domaine.
+///
+/// **Seul** l'attribut `name` de l'acteur est lu. Le moteur place dans ce même
+/// dictionnaire l'intégralité des labels de la ressource, qui contiennent en
+/// pratique des jetons de déploiement et des chaînes de connexion : ne pas les
+/// traduire est la garantie qu'ils ne peuvent être ni affichés, ni sérialisés.
+#[must_use]
+pub(crate) fn to_runtime_event(message: EventMessage) -> RuntimeEvent {
+    let (actor_id, actor_name) = message.actor.map_or((None, None), |actor| {
+        let name = actor
+            .attributes
+            .and_then(|attributes| attributes.get("name").cloned())
+            .filter(|name| !name.is_empty());
+        (actor.id.filter(|id| !id.is_empty()), name)
+    });
+
+    RuntimeEvent {
+        timestamp: message.time,
+        kind: to_resource_kind(message.typ),
+        action: message.action.unwrap_or_else(|| UNKNOWN.to_owned()),
+        actor_id,
+        actor_name,
+    }
+}
+
+/// Traduit la catégorie d'un événement.
+///
+/// Tout ce que le domaine n'expose pas encore est replié sur
+/// [`ResourceKind::Other`] plutôt que d'ajouter des variantes spéculatives.
+fn to_resource_kind(kind: Option<EventMessageTypeEnum>) -> ResourceKind {
+    match kind {
+        Some(EventMessageTypeEnum::CONTAINER) => ResourceKind::Container,
+        Some(EventMessageTypeEnum::IMAGE) => ResourceKind::Image,
+        Some(EventMessageTypeEnum::VOLUME) => ResourceKind::Volume,
+        Some(EventMessageTypeEnum::NETWORK) => ResourceKind::Network,
+        _ => ResourceKind::Other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use bollard::container::LogOutput;
     use bollard::models::{
         ContainerConfig, ContainerInspectResponse, ContainerState as DockerState,
         ContainerStateStatusEnum, ContainerSummary as DockerSummary, ContainerSummaryStateEnum,
-        SystemInfo as DockerSystemInfo,
+        EventActor, EventMessage, EventMessageTypeEnum, SystemInfo as DockerSystemInfo,
     };
     use hormos_core::domain::ContainerState;
+    use hormos_core::events::ResourceKind;
+    use hormos_core::logs::LogSource;
 
-    use super::{normalize_name, short_id, to_details, to_summary, to_system_info};
+    use super::{
+        normalize_name, short_id, to_details, to_log_chunk, to_runtime_event, to_summary,
+        to_system_info,
+    };
 
     fn summary() -> DockerSummary {
         DockerSummary {
@@ -319,5 +390,138 @@ mod tests {
         );
         assert_eq!(mapped.server_version, None);
         assert_eq!(mapped.os, None);
+    }
+
+    #[test]
+    fn log_chunks_keep_their_bytes_untouched() {
+        // Séquence ANSI + octet UTF-8 invalide : le mapping ne doit rien altérer,
+        // l'assainissement est la responsabilité du rendu.
+        let hostile = vec![0x1b, b'[', b'2', b'K', 0xff, b'\n'];
+        let chunk = to_log_chunk(LogOutput::StdOut {
+            message: hostile.clone().into(),
+        });
+        assert_eq!(chunk.source, LogSource::Stdout);
+        assert_eq!(chunk.data, hostile);
+    }
+
+    #[test]
+    fn log_sources_are_mapped_including_the_tty_case() {
+        let cases = [
+            (
+                LogOutput::StdOut {
+                    message: b"a".to_vec().into(),
+                },
+                LogSource::Stdout,
+            ),
+            (
+                LogOutput::StdErr {
+                    message: b"a".to_vec().into(),
+                },
+                LogSource::Stderr,
+            ),
+            (
+                LogOutput::Console {
+                    message: b"a".to_vec().into(),
+                },
+                LogSource::Console,
+            ),
+            // En mode tty le moteur n'a pas de sortie séparée : `StdIn` est replié.
+            (
+                LogOutput::StdIn {
+                    message: b"a".to_vec().into(),
+                },
+                LogSource::Console,
+            ),
+        ];
+        for (output, expected) in cases {
+            assert_eq!(to_log_chunk(output).source, expected);
+        }
+    }
+
+    #[test]
+    fn an_empty_log_chunk_stays_empty() {
+        let chunk = to_log_chunk(LogOutput::StdErr {
+            message: Vec::new().into(),
+        });
+        assert!(chunk.data.is_empty());
+    }
+
+    fn event(attributes: HashMap<String, String>) -> EventMessage {
+        EventMessage {
+            typ: Some(EventMessageTypeEnum::CONTAINER),
+            action: Some("start".to_owned()),
+            actor: Some(EventActor {
+                id: Some("0123456789abcdef".to_owned()),
+                attributes: Some(attributes),
+            }),
+            time: Some(1_700_000_000),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn events_keep_only_the_name_attribute() {
+        let attributes = HashMap::from([
+            ("name".to_owned(), "web".to_owned()),
+            // Labels typiques d'un déploiement : ils ne doivent pas survivre.
+            ("com.example.token".to_owned(), "s3cr3t".to_owned()),
+            ("image".to_owned(), "registry.internal/app:1".to_owned()),
+        ]);
+        let mapped = to_runtime_event(event(attributes));
+
+        assert_eq!(mapped.kind, ResourceKind::Container);
+        assert_eq!(mapped.action, "start");
+        assert_eq!(mapped.actor_name.as_deref(), Some("web"));
+        assert_eq!(mapped.actor_id.as_deref(), Some("0123456789abcdef"));
+        assert_eq!(mapped.timestamp, Some(1_700_000_000));
+
+        // Le type du domaine n'a aucun champ où un label pourrait se glisser.
+        let rendered = format!("{mapped:?}");
+        assert!(
+            !rendered.contains("s3cr3t"),
+            "un label a fuité : {rendered}"
+        );
+        assert!(!rendered.contains("registry.internal"));
+    }
+
+    #[test]
+    fn events_tolerate_missing_fields() {
+        let mapped = to_runtime_event(EventMessage::default());
+        assert_eq!(mapped.kind, ResourceKind::Other);
+        assert_eq!(mapped.action, "<inconnu>");
+        assert_eq!(mapped.actor_id, None);
+        assert_eq!(mapped.actor_name, None);
+        assert_eq!(mapped.timestamp, None);
+    }
+
+    #[test]
+    fn empty_event_strings_become_none() {
+        let mut message = event(HashMap::from([("name".to_owned(), String::new())]));
+        if let Some(actor) = message.actor.as_mut() {
+            actor.id = Some(String::new());
+        }
+        let mapped = to_runtime_event(message);
+        assert_eq!(mapped.actor_id, None);
+        assert_eq!(mapped.actor_name, None);
+    }
+
+    #[test]
+    fn event_kinds_fall_back_to_other() {
+        let cases = [
+            (EventMessageTypeEnum::CONTAINER, ResourceKind::Container),
+            (EventMessageTypeEnum::IMAGE, ResourceKind::Image),
+            (EventMessageTypeEnum::VOLUME, ResourceKind::Volume),
+            (EventMessageTypeEnum::NETWORK, ResourceKind::Network),
+            (EventMessageTypeEnum::DAEMON, ResourceKind::Other),
+            (EventMessageTypeEnum::SECRET, ResourceKind::Other),
+            (EventMessageTypeEnum::EMPTY, ResourceKind::Other),
+        ];
+        for (typ, expected) in cases {
+            let message = EventMessage {
+                typ: Some(typ),
+                ..Default::default()
+            };
+            assert_eq!(to_runtime_event(message).kind, expected);
+        }
     }
 }

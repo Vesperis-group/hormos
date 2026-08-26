@@ -23,6 +23,7 @@
 use std::fmt;
 use std::io;
 
+use ratatui::layout::Rect;
 use ratatui::{DefaultTerminal, Frame};
 
 /// Terminal en mode brut + écran alternatif, restauré à la destruction.
@@ -41,6 +42,15 @@ impl TerminalGuard {
     pub fn new() -> io::Result<Self> {
         let terminal = ratatui::try_init().inspect_err(|_| ratatui::restore())?;
         Ok(Self { terminal })
+    }
+
+    /// Surface actuellement disponible.
+    ///
+    /// # Errors
+    ///
+    /// Renvoie l'erreur d'entrée/sortie remontée par le terminal.
+    pub fn area(&self) -> io::Result<Rect> {
+        Ok(self.terminal.size()?.into())
     }
 
     /// Dessine une image complète.

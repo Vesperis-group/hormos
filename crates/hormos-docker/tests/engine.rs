@@ -30,6 +30,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hormos_core::domain::ContainerState;
 use hormos_core::error::ErrorKind;
+use hormos_core::logs::{LogOptions, LogSource, LogTail};
 use hormos_core::service::ContainerService;
 use hormos_docker::DockerRuntime;
 
@@ -52,6 +53,25 @@ const FIXTURE_LABEL_KEY: &str = "io.hormos.test.fixture";
 
 /// Variable d'activation des tests contre un moteur réel.
 const ENABLE_VAR: &str = "HORMOS_DOCKER_INTEGRATION";
+
+/// Script de la fixture bavarde : cinq lignes sur chaque sortie, puis attente.
+///
+/// Constante littérale, sans aucune valeur interpolée.
+const TALKING_SCRIPT: &str =
+    "i=0; while [ $i -lt 5 ]; do echo ligne-$i; echo erreur-$i >&2; i=$((i+1)); done; sleep 300";
+
+/// Nombre de lignes écrites par la fixture bavarde sur chaque sortie.
+const TALKING_LINES: usize = 5;
+
+/// Échéance d'une lecture de flux : un flux qui ne vient pas doit faire échouer
+/// le test, jamais suspendre la suite.
+const STREAM_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Silence à partir duquel un flux suivi est considéré comme au repos.
+const IDLE_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Délai laissé à un abonnement pour devenir effectif côté moteur.
+const SUBSCRIPTION_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Variable fournissant l'identité de l'exécution (positionnée par la CI).
 const RUN_ID_VAR: &str = "HORMOS_DOCKER_TEST_RUN_ID";
@@ -152,16 +172,30 @@ impl Fixture {
         Self::start_for_run(suite_run_id())
     }
 
+    /// Crée un conteneur qui écrit sur les deux sorties puis reste actif.
+    ///
+    /// Le script est une **constante** : il ne contient aucune valeur calculée,
+    /// donc rien à interpoler. Le produit, lui, n'invoque jamais de shell — voir
+    /// la note d'en-tête : créer un conteneur bavard sort du périmètre d'Hormos,
+    /// et le test ne peut pas dépendre d'une fonctionnalité qui n'existe pas.
+    fn start_talking() -> Self {
+        Self::start_with(suite_run_id(), &["/bin/sh", "-c", TALKING_SCRIPT])
+    }
+
     /// Crée un conteneur rattaché à l'exécution `run_id`.
     ///
     /// Utilisé par le test d'isolation pour simuler une **autre** suite Hormos.
     fn start_for_run(run_id: &str) -> Self {
+        Self::start_with(run_id, &["sleep", "300"])
+    }
+
+    fn start_with(run_id: &str, command: &[&str]) -> Self {
         let fixture_id = unique().to_string();
         let name = format!("hormos-test-{fixture_id}");
         let run_label = format!("{RUN_LABEL_KEY}={run_id}");
         let fixture_label = format!("{FIXTURE_LABEL_KEY}={fixture_id}");
 
-        docker(&[
+        let mut args = vec![
             "run",
             "--detach",
             "--name",
@@ -180,9 +214,9 @@ impl Fixture {
             "--security-opt",
             "no-new-privileges",
             IMAGE,
-            "sleep",
-            "300",
-        ]);
+        ];
+        args.extend_from_slice(command);
+        docker(&args);
 
         Self {
             name,
@@ -568,4 +602,216 @@ async fn cleanup_selection_never_crosses_run_boundaries() {
         containers_of_run(mine.run_id()).contains(&my_id),
         "le nettoyage d'une autre exécution a supprimé un conteneur de la nôtre"
     );
+}
+
+// ------------------------------------------------------------------- flux
+
+/// Lit un flux de journal jusqu'à sa fin, sous échéance.
+async fn collect_logs(
+    service: &ContainerService,
+    name: &str,
+    options: &LogOptions,
+) -> Vec<(LogSource, String)> {
+    let mut stream = service
+        .container_logs(name, options)
+        .expect("le flux de journal n'a pas pu s'ouvrir");
+    let read = async {
+        let mut chunks = Vec::new();
+        while let Some(item) = stream.next().await {
+            let chunk = item.expect("fragment de journal en erreur");
+            chunks.push((
+                chunk.source,
+                String::from_utf8_lossy(&chunk.data).into_owned(),
+            ));
+        }
+        chunks
+    };
+    tokio::time::timeout(STREAM_DEADLINE, read)
+        .await
+        .expect("le journal ne s'est pas terminé dans le délai")
+}
+
+/// Concatène les fragments d'une sortie donnée et les découpe en lignes.
+fn lines_of(chunks: &[(LogSource, String)], source: LogSource) -> Vec<String> {
+    chunks
+        .iter()
+        .filter(|(from, _)| *from == source)
+        .map(|(_, text)| text.as_str())
+        .collect::<String>()
+        .lines()
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+#[tokio::test]
+async fn logs_return_what_the_container_actually_wrote() {
+    if !enabled() {
+        return;
+    }
+    let fixture = Fixture::start_talking();
+    let service = service().await;
+    wait_until_listed_as_running(&service, fixture.name(), true).await;
+
+    // Sans suivi : le moteur ferme le flux de lui-même une fois l'historique
+    // livré. Si ce n'était pas le cas, l'échéance ferait échouer le test.
+    let chunks = collect_logs(&service, fixture.name(), &LogOptions::new()).await;
+
+    let out = lines_of(&chunks, LogSource::Stdout);
+    let err = lines_of(&chunks, LogSource::Stderr);
+    assert_eq!(out.len(), TALKING_LINES, "sortie standard : {out:?}");
+    assert_eq!(err.len(), TALKING_LINES, "sortie d'erreur : {err:?}");
+    assert!(out.contains(&"ligne-0".to_owned()), "{out:?}");
+    assert!(err.contains(&"erreur-4".to_owned()), "{err:?}");
+    assert!(
+        !out.iter().any(|line| line.starts_with("erreur-")),
+        "les deux sorties ont été confondues : {out:?}"
+    );
+}
+
+#[tokio::test]
+async fn tail_bounds_the_history_that_is_replayed() {
+    if !enabled() {
+        return;
+    }
+    let fixture = Fixture::start_talking();
+    let service = service().await;
+    wait_until_listed_as_running(&service, fixture.name(), true).await;
+
+    let options = LogOptions::new().tail(LogTail::Lines(1));
+    let chunks = collect_logs(&service, fixture.name(), &options).await;
+
+    let total =
+        lines_of(&chunks, LogSource::Stdout).len() + lines_of(&chunks, LogSource::Stderr).len();
+    assert!(
+        total < TALKING_LINES * 2,
+        "--tail n'a rien borné : {total} lignes"
+    );
+}
+
+#[tokio::test]
+async fn timestamps_prefix_every_line_when_asked() {
+    if !enabled() {
+        return;
+    }
+    let fixture = Fixture::start_talking();
+    let service = service().await;
+    wait_until_listed_as_running(&service, fixture.name(), true).await;
+
+    let options = LogOptions::new().timestamps(true);
+    let chunks = collect_logs(&service, fixture.name(), &options).await;
+
+    let out = lines_of(&chunks, LogSource::Stdout);
+    assert!(!out.is_empty(), "aucune ligne reçue");
+    assert!(
+        out.iter()
+            .all(|line| line.contains("ligne-") && line.starts_with('2')),
+        "les horodatages manquent : {out:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_followed_log_keeps_the_stream_open_until_it_is_dropped() {
+    if !enabled() {
+        return;
+    }
+    let fixture = Fixture::start_talking();
+    let service = service().await;
+    wait_until_listed_as_running(&service, fixture.name(), true).await;
+
+    let options = LogOptions::new().follow(true);
+    let mut stream = service
+        .container_logs(fixture.name(), &options)
+        .expect("le flux suivi n'a pas pu s'ouvrir");
+
+    // L'historique arrive d'abord, en un nombre de fragments que le moteur
+    // choisit seul : il faut le drainer avant de pouvoir conclure quoi que ce
+    // soit sur le silence qui suit.
+    let mut received = 0_usize;
+    loop {
+        match tokio::time::timeout(IDLE_DELAY, stream.next()).await {
+            // Plus rien ne vient : c'est le silence attendu, pas une fin.
+            Err(_) => break,
+            Ok(Some(Ok(_))) => received += 1,
+            Ok(other) => panic!("le flux suivi s'est refermé tout seul : {other:?}"),
+        }
+    }
+    assert!(received > 0, "aucun fragment reçu");
+
+    // Le conteneur dort désormais. Un flux **sans** suivi se serait refermé et
+    // aurait rendu `None` ; celui-ci reste ouvert, et c'est toute la différence.
+    // Détruire le flux referme la requête : rien à interrompre explicitement.
+    drop(stream);
+}
+
+#[tokio::test]
+async fn the_log_of_an_unknown_container_is_reported_as_missing() {
+    if !enabled() {
+        return;
+    }
+    let service = service().await;
+    let name = format!("hormos-absent-{}", unique());
+
+    // L'ouverture est paresseuse : l'absence se découvre à la première lecture.
+    let mut stream = match service.container_logs(&name, &LogOptions::new()) {
+        Ok(stream) => stream,
+        Err(error) => {
+            assert_eq!(error.kind(), ErrorKind::ContainerNotFound);
+            return;
+        }
+    };
+    let outcome = tokio::time::timeout(STREAM_DEADLINE, stream.next())
+        .await
+        .expect("le flux n'a rien répondu dans le délai");
+
+    match outcome {
+        Some(Err(error)) => assert_eq!(error.kind(), ErrorKind::ContainerNotFound),
+        other => panic!("un conteneur absent a produit : {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn the_engine_reports_the_lifecycle_of_a_container() {
+    if !enabled() {
+        return;
+    }
+    let service = service().await;
+    let mut stream = service
+        .runtime_events()
+        .expect("l'abonnement aux événements a échoué");
+
+    // Un flux est **paresseux** : la requête HTTP ne part qu'à la première
+    // lecture. S'abonner puis créer le conteneur sans avoir lu une seule fois
+    // manquerait les événements de cette création. La lecture est donc mise en
+    // route d'abord, et le conteneur créé ensuite — un événement ne se rejoue
+    // pas.
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(256);
+    let reader = tokio::spawn(async move {
+        while let Some(item) = stream.next().await {
+            let Ok(event) = item else { return };
+            if sender.send(event).await.is_err() {
+                return;
+            }
+        }
+    });
+    tokio::time::sleep(SUBSCRIPTION_DELAY).await;
+
+    let fixture = Fixture::start_talking();
+    let expected = fixture.name().to_owned();
+
+    let found = tokio::time::timeout(STREAM_DEADLINE, async {
+        while let Some(event) = receiver.recv().await {
+            if event.actor_name.as_deref() == Some(expected.as_str()) {
+                return Some(event);
+            }
+        }
+        None
+    })
+    .await
+    .expect("aucun événement dans le délai");
+    reader.abort();
+
+    let event = found.expect("le flux d'événements s'est refermé");
+    assert_eq!(event.kind.as_str(), "container");
+    assert!(!event.action.is_empty(), "action vide");
+    assert!(event.actor_id.is_some(), "identifiant d'acteur absent");
 }

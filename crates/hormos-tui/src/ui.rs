@@ -8,6 +8,7 @@
 
 use hormos_core::display::{sanitize, sanitize_truncated};
 use hormos_core::domain::{ContainerDetails, ContainerSummary};
+use hormos_core::logs::LogSource;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -15,6 +16,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Cell, Clear, Paragraph, Row, Table, TableState, Wrap};
 
 use crate::app::{App, Mode, Severity};
+use crate::stream::StreamState;
 
 /// Largeur minimale exploitable.
 pub const MIN_WIDTH: u16 = 60;
@@ -28,14 +30,26 @@ const SHORT_ID_LEN: usize = 12;
 /// Largeur maximale d'une colonne de texte libre.
 const COLUMN_MAX: usize = 40;
 
+/// Largeur maximale d'un nom d'action d'événement.
+const EVENT_ACTION_MAX: usize = 12;
+
 /// Aide-mémoire affiché en pied d'écran.
-const HINTS: &str = "q quitter · ↑↓/jk naviguer · a tous · R rafraîchir · / filtrer · i détail · s start/stop · r restart · ? aide";
+const HINTS: &str = "q quitter · ↑↓/jk naviguer · a tous · R rafraîchir · / filtrer · i détail · l journal · e événements · s start/stop · r restart · ? aide";
+
+/// Aide-mémoire affiché sous un flux.
+const STREAM_HINTS: &str =
+    "Échap/q retour · ↑↓/jk défiler · PgPréc/PgSuiv page · Début/Fin · R reconnecter";
 
 /// Dessine l'image complète.
 pub fn render(app: &App, frame: &mut Frame) {
     let area = frame.area();
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         render_too_small(frame, area);
+        return;
+    }
+
+    if matches!(app.mode(), Mode::Logs { .. } | Mode::Events) {
+        render_stream(app, frame, area);
         return;
     }
 
@@ -59,8 +73,179 @@ pub fn render(app: &App, frame: &mut Frame) {
     match app.mode() {
         Mode::Help => render_help(frame, area),
         Mode::Details(details) => render_details(frame, area, details.as_deref()),
-        Mode::Browse | Mode::Filter { .. } => {}
+        Mode::Browse | Mode::Filter { .. } | Mode::Logs { .. } | Mode::Events => {}
     }
+}
+
+/// Hauteur utile du panneau de flux pour une surface donnée.
+///
+/// Elle est calculée ici, à côté de la mise en page, plutôt que devinée par
+/// l'état : c'est la disposition qui décide, et une seule formule évite qu'un
+/// « page suivante » saute des lignes.
+#[must_use]
+pub const fn stream_viewport(area: Rect) -> usize {
+    // En-tête, pied d'écran, et les deux bordures du cadre.
+    (area.height.saturating_sub(4)) as usize
+}
+
+/// Dessine un flux en plein écran : journal ou événements.
+fn render_stream(app: &App, frame: &mut Frame, area: Rect) {
+    let [header, body, footer] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+
+    let viewport = stream_viewport(area);
+    match app.mode() {
+        Mode::Logs { name, .. } => {
+            render_stream_header(app, frame, header, &format!("journal · {}", sanitize(name)));
+            render_log_lines(app, frame, body, viewport);
+        }
+        _ => {
+            render_stream_header(app, frame, header, "événements du moteur");
+            render_events(app, frame, body, viewport);
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            STREAM_HINTS,
+            Style::default().fg(Color::DarkGray),
+        )),
+        footer,
+    );
+}
+
+fn render_stream_header(app: &App, frame: &mut Frame, area: Rect, title: &str) {
+    let (kept, dropped, follows) = match app.mode() {
+        Mode::Events => (
+            app.events().len(),
+            app.events().dropped(),
+            app.events().follows(),
+        ),
+        _ => (app.logs().len(), app.logs().dropped(), app.logs().follows()),
+    };
+
+    let mut spans = vec![
+        Span::styled(
+            "Hormos",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(format!(" · {title} · {kept}")),
+    ];
+    if dropped > 0 {
+        spans.push(Span::styled(
+            format!(" · {dropped} perdus"),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    spans.push(match app.stream() {
+        StreamState::Idle => Span::raw(String::new()),
+        StreamState::Connecting => {
+            Span::styled(" · connexion…", Style::default().fg(Color::Yellow))
+        }
+        StreamState::Live if follows => {
+            Span::styled(" · en direct", Style::default().fg(Color::Green))
+        }
+        StreamState::Live => Span::styled(
+            " · en pause (Fin reprend)",
+            Style::default().fg(Color::Yellow),
+        ),
+        StreamState::Ended(None) => {
+            Span::styled(" · terminé", Style::default().fg(Color::DarkGray))
+        }
+        StreamState::Ended(Some(error)) => Span::styled(
+            format!(
+                " · interrompu : {}",
+                sanitize_truncated(error, COLUMN_MAX * 2)
+            ),
+            Style::default().fg(Color::Red),
+        ),
+    });
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn render_log_lines(app: &App, frame: &mut Frame, area: Rect, viewport: usize) {
+    if app.logs().is_empty() {
+        render_empty_stream(frame, area, "Aucune ligne pour l'instant.");
+        return;
+    }
+    // Les lignes ont déjà été décodées et neutralisées par le découpeur ; elles
+    // repassent tout de même par l'assainissement d'affichage, qui est la seule
+    // frontière dont dépend la sûreté du terminal.
+    let lines: Vec<Line> = app
+        .logs()
+        .visible(viewport)
+        .map(|line| {
+            let style = if line.source == LogSource::Stderr {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default()
+            };
+            Line::styled(sanitize(&line.text), style)
+        })
+        .collect();
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).block(container_block()),
+        area,
+    );
+}
+
+fn render_events(app: &App, frame: &mut Frame, area: Rect, viewport: usize) {
+    if app.events().is_empty() {
+        render_empty_stream(frame, area, "Aucun événement pour l'instant.");
+        return;
+    }
+    let lines: Vec<Line> = app
+        .events()
+        .visible(viewport)
+        .map(|event| {
+            Line::from(vec![
+                Span::styled(
+                    format!("{:<21}", sanitize(&event.formatted_time())),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!("{:<10}", event.kind.as_str()),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::raw(format!(
+                    "{:<12}",
+                    sanitize_truncated(&event.action, EVENT_ACTION_MAX)
+                )),
+                Span::raw(format!(
+                    "{:<14}",
+                    event
+                        .short_id(SHORT_ID_LEN)
+                        .map_or_else(|| "-".to_owned(), |id| sanitize(&id))
+                )),
+                Span::raw(
+                    event
+                        .actor_name
+                        .as_deref()
+                        .map_or_else(String::new, |name| sanitize_truncated(name, COLUMN_MAX)),
+                ),
+            ])
+        })
+        .collect();
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).block(container_block()),
+        area,
+    );
+}
+
+fn render_empty_stream(frame: &mut Frame, area: Rect, message: &str) {
+    frame.render_widget(
+        Paragraph::new(message)
+            .style(Style::default().fg(Color::DarkGray))
+            .wrap(Wrap { trim: true })
+            .centered()
+            .block(container_block()),
+        area,
+    );
 }
 
 fn render_header(app: &App, frame: &mut Frame, area: Rect) {
@@ -237,6 +422,8 @@ fn render_help(frame: &mut Frame, area: Rect) {
         ("R", "rafraîchir la liste"),
         ("/", "filtrer sur le nom, l'image ou l'identifiant"),
         ("i", "afficher le détail du conteneur"),
+        ("l", "afficher le journal du conteneur"),
+        ("e", "afficher les événements du moteur"),
         ("s", "démarrer ou arrêter selon l'état"),
         ("r", "redémarrer"),
         ("?", "afficher ou masquer cette aide"),
@@ -258,7 +445,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
             })
             .collect::<Vec<_>>(),
     );
-    popup(frame, area, "Aide", Paragraph::new(text), 64, 14);
+    popup(frame, area, "Aide", Paragraph::new(text), 64, 16);
 }
 
 fn render_details(frame: &mut Frame, area: Rect, details: Option<&ContainerDetails>) {
@@ -346,8 +533,13 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    use super::{MIN_HEIGHT, MIN_WIDTH, render};
+    use hormos_core::events::{ResourceKind, RuntimeEvent};
+    use hormos_core::logs::LogSource;
+    use ratatui::layout::Rect;
+
+    use super::{MIN_HEIGHT, MIN_WIDTH, render, stream_viewport};
     use crate::app::{App, Message};
+    use crate::stream::LogLine;
 
     fn summary(id: &str, name: &str, image: &str, state: ContainerState) -> ContainerSummary {
         ContainerSummary {
@@ -532,5 +724,134 @@ mod tests {
         let mut app = fixture();
         press(&mut app, KeyCode::Char('r'));
         assert!(screen(&app, 120, 30).contains("action en cours…"));
+    }
+
+    // ------------------------------------------------------------------ flux
+
+    /// Ouvre le journal du premier conteneur et y verse des lignes.
+    fn with_logs(lines: Vec<LogLine>) -> App {
+        let mut app = fixture();
+        press(&mut app, KeyCode::Char('l'));
+        app.update(Message::Logs {
+            generation: 1,
+            lines,
+        });
+        app
+    }
+
+    fn stdout(text: &str) -> LogLine {
+        LogLine::new(LogSource::Stdout, text.to_owned())
+    }
+
+    #[test]
+    fn the_log_screen_shows_the_end_of_the_stream() {
+        let app = with_logs((0..100).map(|n| stdout(&format!("ligne {n}"))).collect());
+        let screen = screen(&app, 80, 12);
+
+        assert!(screen.contains("journal · web"), "{screen}");
+        assert!(screen.contains("en direct"), "{screen}");
+        assert!(screen.contains("ligne 99"), "{screen}");
+        assert!(!screen.contains("ligne 0 "), "le début est encore affiché");
+    }
+
+    #[test]
+    fn an_empty_log_says_so_rather_than_showing_nothing() {
+        let mut app = fixture();
+        press(&mut app, KeyCode::Char('l'));
+        let screen = screen(&app, 80, 12);
+
+        assert!(screen.contains("Aucune ligne"), "{screen}");
+        assert!(screen.contains("connexion"), "{screen}");
+    }
+
+    #[test]
+    fn hostile_log_lines_cannot_drive_the_terminal() {
+        // Le découpeur a déjà neutralisé ces octets ; la ligne est fabriquée à
+        // la main pour éprouver la frontière d'affichage elle-même.
+        let app = with_logs(vec![stdout("\u{1b}[2Jefface\u{7}\u{9b}31m")]);
+        let screen = screen(&app, 80, 12);
+
+        assert!(
+            !screen.contains('\u{1b}'),
+            "séquence ANSI rendue telle quelle"
+        );
+        assert!(!screen.contains('\u{7}'), "sonnerie rendue telle quelle");
+        assert!(!screen.contains('\u{9b}'), "CSI 8 bits rendu tel quel");
+        assert!(screen.contains("efface"), "{screen}");
+    }
+
+    #[test]
+    fn a_paused_log_says_that_it_is_no_longer_following() {
+        let mut app = with_logs((0..100).map(|n| stdout(&format!("ligne {n}"))).collect());
+        press(&mut app, KeyCode::PageUp);
+        let screen = screen(&app, 80, 12);
+
+        assert!(screen.contains("en pause"), "{screen}");
+    }
+
+    #[test]
+    fn an_interrupted_stream_shows_the_reason_and_keeps_its_lines() {
+        let mut app = with_logs(vec![stdout("dernière ligne")]);
+        app.update(Message::StreamEnded {
+            generation: 1,
+            outcome: Err(HormosError::runtime("le moteur a coupé")),
+        });
+        let screen = screen(&app, 80, 12);
+
+        assert!(screen.contains("interrompu"), "{screen}");
+        assert!(screen.contains("dernière ligne"), "{screen}");
+    }
+
+    #[test]
+    fn dropped_lines_are_announced() {
+        let mut app = fixture();
+        press(&mut app, KeyCode::Char('l'));
+        // Deux fois la borne du tampon : la moitié la plus ancienne est perdue.
+        app.update(Message::Logs {
+            generation: 1,
+            lines: (0..(crate::stream::MAX_LOG_LINES * 2))
+                .map(|n| stdout(&format!("ligne {n}")))
+                .collect(),
+        });
+        let screen = screen(&app, 80, 12);
+
+        assert!(screen.contains("perdus"), "{screen}");
+    }
+
+    #[test]
+    fn the_event_screen_lists_what_the_engine_reports() {
+        let mut app = fixture();
+        press(&mut app, KeyCode::Char('e'));
+        app.update(Message::Event {
+            generation: 1,
+            event: Box::new(RuntimeEvent {
+                timestamp: Some(1_700_000_000),
+                kind: ResourceKind::Container,
+                action: "start".to_owned(),
+                actor_id: Some("0123456789abcdef".to_owned()),
+                actor_name: Some("web\u{1b}[2K".to_owned()),
+            }),
+        });
+        let screen = screen(&app, 80, 12);
+
+        assert!(screen.contains("événements du moteur"), "{screen}");
+        assert!(screen.contains("container"), "{screen}");
+        assert!(screen.contains("start"), "{screen}");
+        assert!(screen.contains("0123456789ab"), "{screen}");
+        assert!(!screen.contains('\u{1b}'), "nom d'acteur non assaini");
+    }
+
+    #[test]
+    fn the_viewport_matches_the_rows_actually_drawn() {
+        // Si les deux divergeaient, « page suivante » sauterait des lignes.
+        let height = 20;
+        let app = with_logs((0..100).map(|n| stdout(&format!("ligne {n}"))).collect());
+        let viewport = stream_viewport(Rect::new(0, 0, 80, height));
+        let screen = screen(&app, 80, height);
+
+        let drawn = (0..100)
+            .filter(|n| screen.contains(&format!("ligne {n} ")))
+            .count();
+        assert_eq!(drawn, viewport, "{screen}");
     }
 }

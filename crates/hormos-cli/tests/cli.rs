@@ -10,7 +10,7 @@
 
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
-use predicates::str::contains;
+use predicates::str::{contains, is_empty};
 
 /// Code de sortie « entrée invalide », partagé avec l'erreur d'usage de clap.
 const EXIT_INVALID_INPUT: i32 = 2;
@@ -41,7 +41,9 @@ fn help_lists_every_command() {
             .and(contains("inspect"))
             .and(contains("start"))
             .and(contains("stop"))
-            .and(contains("restart")),
+            .and(contains("restart"))
+            .and(contains("logs"))
+            .and(contains("events")),
     );
 }
 
@@ -92,12 +94,44 @@ fn invalid_references_are_rejected_before_any_connection() {
 
 #[test]
 fn every_container_command_validates_its_reference() {
-    for command in ["inspect", "start", "stop", "restart"] {
+    for command in ["inspect", "start", "stop", "restart", "logs"] {
         hormos()
             .env("DOCKER_HOST", MISSING_SOCKET)
             .args([command, "nginx/json"])
             .assert()
             .code(EXIT_INVALID_INPUT);
+    }
+}
+
+#[test]
+fn tail_is_validated_before_any_connection() {
+    // Le démon est injoignable : une valeur refusée doit néanmoins produire une
+    // erreur d'usage, preuve que le contrôle a lieu à l'analyse des arguments.
+    for value in ["-5", "abc", "999999999", "1 000"] {
+        hormos()
+            .env("DOCKER_HOST", MISSING_SOCKET)
+            .args(["logs", "web", "--tail", value])
+            .assert()
+            .code(EXIT_INVALID_INPUT);
+    }
+}
+
+#[test]
+fn streaming_commands_reach_the_daemon_check() {
+    // Références et options valides : l'échec doit alors porter sur le moteur,
+    // pas sur l'entrée.
+    for args in [
+        vec!["logs", "web"],
+        vec!["logs", "web", "--follow", "--tail", "10", "--timestamps"],
+        vec!["events"],
+        vec!["events", "--json"],
+    ] {
+        hormos()
+            .env("DOCKER_HOST", MISSING_SOCKET)
+            .args(&args)
+            .assert()
+            .code(EXIT_DAEMON_UNAVAILABLE)
+            .stdout(is_empty());
     }
 }
 

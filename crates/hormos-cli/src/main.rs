@@ -14,6 +14,7 @@
 
 mod cli;
 mod output;
+mod streams;
 
 use std::io::IsTerminal;
 use std::process::ExitCode;
@@ -21,10 +22,12 @@ use std::sync::Arc;
 
 use clap::Parser;
 use hormos_core::error::{ErrorKind, HormosError, Result};
+use hormos_core::logs::LogOptions;
 use hormos_core::service::ContainerService;
 use hormos_docker::DockerRuntime;
 
 use crate::cli::{Cli, Command};
+use crate::streams::Sinkable;
 
 /// Succès.
 const EXIT_OK: u8 = 0;
@@ -119,6 +122,46 @@ async fn run(cli: Cli) -> Result<()> {
             println!("{}", restarted.as_str());
             Ok(())
         }
+        Command::Logs {
+            reference,
+            follow,
+            tail,
+            timestamps,
+        } => {
+            let options = LogOptions::new()
+                .follow(follow)
+                .tail(tail)
+                .timestamps(timestamps);
+            let stdout = std::io::stdout();
+            let stderr = std::io::stderr();
+            // La politique de rendu est décidée par sortie : rediriger `stdout`
+            // ne doit pas désarmer l'assainissement de `stderr`, resté au terminal.
+            let out = Sinkable {
+                sanitize: stdout.is_terminal(),
+                writer: stdout.lock(),
+            };
+            let err = Sinkable {
+                sanitize: stderr.is_terminal(),
+                writer: stderr.lock(),
+            };
+            streams::run_logs(&service, &reference, &options, out, err, interrupt()).await
+        }
+        Command::Events { json } => {
+            let stdout = std::io::stdout();
+            let mut writer = stdout.lock();
+            streams::run_events(&service, json, &mut writer, interrupt()).await
+        }
+    }
+}
+
+/// Attend une demande d'interruption de l'utilisateur (`Ctrl+C`).
+///
+/// Un échec d'installation du gestionnaire ne doit pas empêcher la commande de
+/// fonctionner : dans ce cas on n'annule simplement jamais, et l'utilisateur
+/// garde le recours habituel du terminal.
+async fn interrupt() {
+    if tokio::signal::ctrl_c().await.is_err() {
+        std::future::pending::<()>().await;
     }
 }
 
