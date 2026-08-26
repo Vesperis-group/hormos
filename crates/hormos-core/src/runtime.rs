@@ -14,7 +14,10 @@ use async_trait::async_trait;
 
 use crate::domain::{ContainerDetails, ContainerSummary, SystemInfo};
 use crate::error::Result;
+use crate::events::RuntimeEvent;
+use crate::logs::{LogChunk, LogOptions};
 use crate::reference::ContainerRef;
+use crate::stream::RuntimeStream;
 
 /// Opérations que doit fournir un moteur de conteneurs.
 ///
@@ -39,4 +42,34 @@ pub trait ContainerRuntime: std::fmt::Debug + Send + Sync {
 
     /// Redémarre un conteneur.
     async fn restart_container(&self, reference: &ContainerRef) -> Result<()>;
+
+    /// Ouvre le journal d'un conteneur.
+    ///
+    /// La méthode est **synchrone** : elle ne fait que préparer le flux, sans
+    /// attendre le moteur. Rien n'est demandé tant que le flux n'est pas consommé,
+    /// et détruire le flux libère la ressource sous-jacente.
+    ///
+    /// Le flux **n'est pas borné par le délai d'attente** des opérations
+    /// ponctuelles : un suivi (`follow`) doit pouvoir rester ouvert des heures.
+    ///
+    /// # Errors
+    ///
+    /// Renvoie une erreur si le flux ne peut pas être préparé. Une panne survenant
+    /// **pendant** le flux est livrée comme élément de celui-ci, pas ici.
+    fn container_logs(
+        &self,
+        reference: &ContainerRef,
+        options: &LogOptions,
+    ) -> Result<RuntimeStream<LogChunk>>;
+
+    /// S'abonne au flux d'événements du moteur.
+    ///
+    /// Mêmes propriétés que [`ContainerRuntime::container_logs`] : préparation
+    /// synchrone, ouverture paresseuse, annulation par destruction, aucun délai
+    /// maximal.
+    ///
+    /// # Errors
+    ///
+    /// Renvoie une erreur si l'abonnement ne peut pas être préparé.
+    fn runtime_events(&self) -> Result<RuntimeStream<RuntimeEvent>>;
 }

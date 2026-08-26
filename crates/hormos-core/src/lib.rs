@@ -6,6 +6,8 @@
 //! - le [domaine](domain) (types Hormos, indépendants de tout moteur) ;
 //! - la [validation](reference) des références de conteneur ;
 //! - le [modèle d'erreurs](error) ;
+//! - les [flux temps réel](stream), les [journaux](logs) et les
+//!   [événements](events) ;
 //! - l'abstraction [`ContainerRuntime`](runtime::ContainerRuntime) ;
 //! - le [service](service::ContainerService) qui expose les cas d'usage.
 //!
@@ -15,9 +17,12 @@
 pub mod display;
 pub mod domain;
 pub mod error;
+pub mod events;
+pub mod logs;
 pub mod reference;
 pub mod runtime;
 pub mod service;
+pub mod stream;
 
 /// Faux moteur déterministe, destiné aux **tests** des interfaces.
 ///
@@ -28,6 +33,9 @@ pub mod service;
 pub mod mock;
 
 pub use error::{HormosError, Result};
+pub use events::{ResourceKind, RuntimeEvent};
+pub use logs::{LogChunk, LogDecoder, LogFramer, LogOptions, LogSource, LogTail};
 pub use reference::ContainerRef;
 pub use runtime::ContainerRuntime;
 pub use service::ContainerService;
+pub use stream::RuntimeStream;

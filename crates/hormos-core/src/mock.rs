@@ -10,8 +10,11 @@ use async_trait::async_trait;
 
 use crate::domain::{ContainerDetails, ContainerState, ContainerSummary, SystemInfo};
 use crate::error::{HormosError, Result};
+use crate::events::{ResourceKind, RuntimeEvent};
+use crate::logs::{LogChunk, LogOptions, LogSource};
 use crate::reference::ContainerRef;
 use crate::runtime::ContainerRuntime;
+use crate::stream::RuntimeStream;
 
 /// Appel reçu par le faux moteur.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +31,10 @@ pub enum Call {
     Stop(String),
     /// `restart_container(reference)`.
     Restart(String),
+    /// `container_logs(reference, options)`.
+    Logs(String, LogOptions),
+    /// `runtime_events()`.
+    Events,
 }
 
 /// Faux moteur enregistrant les appels.
@@ -35,6 +42,9 @@ pub enum Call {
 pub struct MockRuntime {
     calls: Mutex<Vec<Call>>,
     failure: Option<HormosError>,
+    logs: Mutex<Option<Vec<Result<LogChunk>>>>,
+    events: Mutex<Option<Vec<Result<RuntimeEvent>>>>,
+    endless: bool,
 }
 
 impl Default for MockRuntime {
@@ -49,6 +59,9 @@ impl MockRuntime {
         Self {
             calls: Mutex::new(Vec::new()),
             failure: None,
+            logs: Mutex::new(None),
+            events: Mutex::new(None),
+            endless: false,
         }
     }
 
@@ -57,7 +70,35 @@ impl MockRuntime {
         Self {
             calls: Mutex::new(Vec::new()),
             failure: Some(error),
+            logs: Mutex::new(None),
+            events: Mutex::new(None),
+            endless: false,
         }
+    }
+
+    /// Impose la séquence exacte que produira le flux de journal.
+    #[must_use]
+    pub fn with_logs(self, items: Vec<Result<LogChunk>>) -> Self {
+        if let Ok(mut logs) = self.logs.lock() {
+            *logs = Some(items);
+        }
+        self
+    }
+
+    /// Impose la séquence exacte que produira le flux d'événements.
+    #[must_use]
+    pub fn with_events(self, items: Vec<Result<RuntimeEvent>>) -> Self {
+        if let Ok(mut events) = self.events.lock() {
+            *events = Some(items);
+        }
+        self
+    }
+
+    /// Rend les flux muets et sans fin, pour éprouver l'annulation.
+    #[must_use]
+    pub const fn endless(mut self) -> Self {
+        self.endless = true;
+        self
     }
 
     /// Appels enregistrés, dans l'ordre.
@@ -84,6 +125,23 @@ impl MockRuntime {
             state,
             created: Some(1_700_000_000),
         }
+    }
+
+    fn default_logs() -> Vec<Result<LogChunk>> {
+        vec![
+            Ok(LogChunk::new(LogSource::Stdout, b"bonjour\n".to_vec())),
+            Ok(LogChunk::new(LogSource::Stderr, b"attention\n".to_vec())),
+        ]
+    }
+
+    fn default_events() -> Vec<Result<RuntimeEvent>> {
+        vec![Ok(RuntimeEvent {
+            timestamp: Some(1_700_000_000),
+            kind: ResourceKind::Container,
+            action: "start".to_owned(),
+            actor_id: Some("id-web".to_owned()),
+            actor_name: Some("web".to_owned()),
+        })]
     }
 }
 
@@ -135,5 +193,31 @@ impl ContainerRuntime for MockRuntime {
 
     async fn restart_container(&self, reference: &ContainerRef) -> Result<()> {
         self.record(Call::Restart(reference.as_str().to_owned()))
+    }
+
+    fn container_logs(
+        &self,
+        reference: &ContainerRef,
+        options: &LogOptions,
+    ) -> Result<RuntimeStream<LogChunk>> {
+        self.record(Call::Logs(reference.as_str().to_owned(), *options))?;
+        if self.endless {
+            return Ok(RuntimeStream::never());
+        }
+        let scripted = self.logs.lock().ok().and_then(|logs| logs.clone());
+        Ok(RuntimeStream::from_items(
+            scripted.unwrap_or_else(Self::default_logs),
+        ))
+    }
+
+    fn runtime_events(&self) -> Result<RuntimeStream<RuntimeEvent>> {
+        self.record(Call::Events)?;
+        if self.endless {
+            return Ok(RuntimeStream::never());
+        }
+        let scripted = self.events.lock().ok().and_then(|events| events.clone());
+        Ok(RuntimeStream::from_items(
+            scripted.unwrap_or_else(Self::default_events),
+        ))
     }
 }
